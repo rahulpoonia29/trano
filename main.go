@@ -163,25 +163,28 @@ func applyMigrations(dbConn *sql.DB, logger *log.Logger) error {
 // runSchedulerTicker runs the scheduler at regular intervals
 func runSchedulerTicker(ctx context.Context, queries *db.Queries, logger *log.Logger, loc *time.Location) {
 	// Run immediately on startup
-	now := time.Now().In(loc)
-	logger.Printf("running initial schedule generation for %s", now.Format(time.DateOnly))
-	schedular.GenerateRunsForDate(ctx, queries, logger, now)
+	startTime := time.Now().In(loc)
+	logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
+	schedular.GenerateRunsForDate(ctx, queries, logger, startTime)
 
-	// Calculate time until next midnight in IST
-	schedularTime := time.Date(now.Year(), now.Month(), now.Day(), 20, 0, 0, 0, loc) // 8PM today
-	timeUntilNextSchedule := time.Until(schedularTime)
+	// Calculate time until next 8PM local time
+	nextRun := time.Date(startTime.Year(), startTime.Month(), startTime.Day(), 20, 0, 0, 0, loc)
+	if startTime.After(nextRun) {
+		nextRun = nextRun.Add(24 * time.Hour)
+	}
+	delay := time.Until(nextRun)
 
-	logger.Printf("next scheduler run at %s (in %v)", schedularTime.Format(time.RFC3339), timeUntilNextSchedule)
+	logger.Printf("next scheduler run at %s (in %v)", nextRun.Format(time.RFC3339), delay)
 
-	// Wait until midnight
+	// Wait until next scheduled run
 	select {
-	case <-time.After(timeUntilNextSchedule):
+	case <-time.After(delay):
 	case <-ctx.Done():
 		logger.Println("scheduler ticker shutting down")
 		return
 	}
 
-	// Create ticker for daily runs (at midnight IST)
+	// Create ticker for daily runs at the same time
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 
@@ -190,12 +193,10 @@ func runSchedulerTicker(ctx context.Context, queries *db.Queries, logger *log.Lo
 		case <-ctx.Done():
 			logger.Println("scheduler ticker shutting down")
 			return
-
-		case t := <-ticker.C:
-			currentTime := t.In(loc)
-			nextdayDate := currentTime.Add(24 * time.Hour)
-			logger.Printf("running scheduled generation for %s", nextdayDate.Format(time.DateOnly))
-			schedular.GenerateRunsForDate(ctx, queries, logger, nextdayDate)
+		case tick := <-ticker.C:
+			runDate := tick.In(loc)
+			logger.Printf("running scheduled generation for %s", runDate.Format(time.DateOnly))
+			schedular.GenerateRunsForDate(ctx, queries, logger, runDate)
 		}
 	}
 }
