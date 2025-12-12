@@ -116,3 +116,5 @@ CREATE TABLE
     );
 
 CREATE INDEX IF NOT EXISTS idx_trl_run_time ON train_run_locations (run_id, timestamp_ISO);
+
+CREATE INDEX IF NOT EXISTS idx_train_runs_poll ON train_runs (has_arrived, run_date, last_update_timestamp_ISO);

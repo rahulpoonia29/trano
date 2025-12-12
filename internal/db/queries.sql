@@ -49,7 +49,7 @@ SELECT
 FROM train_runs tr
 JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
 WHERE tr.has_arrived = 0
-    AND date(tr.run_date) = date(CAST(@target_date AS TEXT))
+    AND tr.run_date = CAST(@target_date AS TEXT)
     AND COALESCE(json_array_length(tr.errors), 0) < CAST(@threshold AS INTEGER)
 ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST;
 

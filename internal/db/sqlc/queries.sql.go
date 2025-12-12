@@ -68,12 +68,12 @@ SELECT
     tr.errors,
     ts.origin_station_code AS source_station,
     ts.terminus_station_code AS destination_station
-  FROM train_runs tr
-  JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
-  WHERE tr.has_arrived = 0
-    AND date(tr.run_date) = date(CAST(?1 AS TEXT))
+FROM train_runs tr
+JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
+WHERE tr.has_arrived = 0
+    AND tr.run_date = CAST(?1 AS TEXT)
     AND COALESCE(json_array_length(tr.errors), 0) < CAST(?2 AS INTEGER)
-  ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST
+ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST
 `
 
 type ListRunsToPollParams struct {
@@ -179,7 +179,7 @@ type UpdateRunStatusParams struct {
 	RunID         string          `json:"run_id"`
 }
 
-// Updates the main run state (use COALESCE pattern for partial updates)
+// Updates the main run state
 func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateRunStatus,
 		arg.HasStarted,
