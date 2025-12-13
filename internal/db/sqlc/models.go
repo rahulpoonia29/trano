@@ -10,22 +10,32 @@ import (
 )
 
 type Station struct {
-	StationCode string         `json:"station_code"`
-	StationName string         `json:"station_name"`
-	Address     sql.NullString `json:"address"`
-	ElevationM  float64        `json:"elevation_m"`
-	Lat         float64        `json:"lat"`
-	Lng         float64        `json:"lng"`
-	CreatedAt   sql.NullString `json:"created_at"`
-	UpdatedAt   sql.NullString `json:"updated_at"`
+	StationCode       string          `json:"station_code"`
+	StationName       string          `json:"station_name"`
+	Zone              sql.NullString  `json:"zone"`
+	Division          sql.NullString  `json:"division"`
+	Address           sql.NullString  `json:"address"`
+	ElevationM        sql.NullFloat64 `json:"elevation_m"`
+	Lat               sql.NullFloat64 `json:"lat"`
+	Lng               sql.NullFloat64 `json:"lng"`
+	NumberOfPlatforms sql.NullInt64   `json:"number_of_platforms"`
+	StationType       sql.NullString  `json:"station_type"`
+	StationCategory   sql.NullString  `json:"station_category"`
+	TrackType         sql.NullString  `json:"track_type"`
+	CreatedAt         sql.NullString  `json:"created_at"`
+	UpdatedAt         sql.NullString  `json:"updated_at"`
 }
 
 type Train struct {
-	TrainNo   int64          `json:"train_no"`
-	TrainName string         `json:"train_name"`
-	TrainType string         `json:"train_type"`
-	CreatedAt sql.NullString `json:"created_at"`
-	UpdatedAt sql.NullString `json:"updated_at"`
+	TrainNo          int64          `json:"train_no"`
+	TrainName        string         `json:"train_name"`
+	TrainType        string         `json:"train_type"`
+	Zone             sql.NullString `json:"zone"`
+	ReturnTrainNo    sql.NullInt64  `json:"return_train_no"`
+	Coachcomposition sql.NullString `json:"coachcomposition"`
+	SourceUrl        string         `json:"source_url"`
+	CreatedAt        sql.NullString `json:"created_at"`
+	UpdatedAt        sql.NullString `json:"updated_at"`
 }
 
 type TrainRoute struct {
@@ -44,7 +54,7 @@ type TrainRun struct {
 	RunDate                string          `json:"run_date"`
 	HasStarted             int64           `json:"has_started"`
 	HasArrived             int64           `json:"has_arrived"`
-	EndReason              sql.NullString  `json:"end_reason"`
+	CurrentStatus          sql.NullString  `json:"current_status"`
 	LastKnownLat           sql.NullFloat64 `json:"last_known_lat"`
 	LastKnownLng           sql.NullFloat64 `json:"last_known_lng"`
 	LastUpdateTimestampIso sql.NullString  `json:"last_update_timestamp_iso"`
@@ -67,7 +77,6 @@ type TrainSchedule struct {
 	OriginStationCode     string         `json:"origin_station_code"`
 	TerminusStationCode   string         `json:"terminus_station_code"`
 	OriginSchDepartureMin int64          `json:"origin_sch_departure_min"`
-	TerminusSchArrivalMin int64          `json:"terminus_sch_arrival_min"`
 	TotalDistanceKm       float64        `json:"total_distance_km"`
 	TotalRuntimeMin       int64          `json:"total_runtime_min"`
 	RunningDaysBitmap     int64          `json:"running_days_bitmap"`

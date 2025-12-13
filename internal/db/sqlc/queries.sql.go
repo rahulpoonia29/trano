@@ -159,7 +159,7 @@ UPDATE train_runs
 SET
   has_started               = COALESCE(?1, has_started),
   has_arrived               = COALESCE(?2, has_arrived),
-  end_reason                = COALESCE(?3, end_reason),
+  current_status            = COALESCE(?3, current_status),
   last_known_lat            = COALESCE(?4, last_known_lat),
   last_known_lng            = COALESCE(?5, last_known_lng),
   last_update_timestamp_ISO = COALESCE(?6, last_update_timestamp_ISO),
@@ -171,7 +171,7 @@ WHERE run_id = ?8
 type UpdateRunStatusParams struct {
 	HasStarted    int64           `json:"has_started"`
 	HasArrived    int64           `json:"has_arrived"`
-	EndReason     sql.NullString  `json:"end_reason"`
+	CurrentStatus sql.NullString  `json:"current_status"`
 	Lat           sql.NullFloat64 `json:"lat"`
 	Lng           sql.NullFloat64 `json:"lng"`
 	LastUpdateIso sql.NullString  `json:"last_update_iso"`
@@ -184,12 +184,197 @@ func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams
 	_, err := q.db.ExecContext(ctx, updateRunStatus,
 		arg.HasStarted,
 		arg.HasArrived,
-		arg.EndReason,
+		arg.CurrentStatus,
 		arg.Lat,
 		arg.Lng,
 		arg.LastUpdateIso,
 		arg.Errors,
 		arg.RunID,
+	)
+	return err
+}
+
+const upsertStation = `-- name: UpsertStation :exec
+INSERT INTO stations (
+  station_code,
+  station_name,
+  zone,
+  division,
+  address,
+  elevation_m,
+  lat,
+  lng,
+  number_of_platforms,
+  station_type,
+  station_category,
+  track_type,
+  updated_at
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4,
+  ?5,
+  ?6,
+  ?7,
+  ?8,
+  ?9,
+  ?10,
+  ?11,
+  ?12,
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT(station_code) DO UPDATE
+SET
+  station_name = excluded.station_name,
+  zone = excluded.zone,
+  division = excluded.division,
+  address = excluded.address,
+  elevation_m = excluded.elevation_m,
+  lat = excluded.lat,
+  lng = excluded.lng,
+  number_of_platforms = excluded.number_of_platforms,
+  station_type = excluded.station_type,
+  station_category = excluded.station_category,
+  track_type = excluded.track_type,
+  updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertStationParams struct {
+	StationCode       string          `json:"station_code"`
+	StationName       string          `json:"station_name"`
+	Zone              sql.NullString  `json:"zone"`
+	Division          sql.NullString  `json:"division"`
+	Address           sql.NullString  `json:"address"`
+	ElevationM        sql.NullFloat64 `json:"elevation_m"`
+	Lat               sql.NullFloat64 `json:"lat"`
+	Lng               sql.NullFloat64 `json:"lng"`
+	NumberOfPlatforms sql.NullInt64   `json:"number_of_platforms"`
+	StationType       sql.NullString  `json:"station_type"`
+	StationCategory   sql.NullString  `json:"station_category"`
+	TrackType         sql.NullString  `json:"track_type"`
+}
+
+// Upserts a station record
+func (q *Queries) UpsertStation(ctx context.Context, arg UpsertStationParams) error {
+	_, err := q.db.ExecContext(ctx, upsertStation,
+		arg.StationCode,
+		arg.StationName,
+		arg.Zone,
+		arg.Division,
+		arg.Address,
+		arg.ElevationM,
+		arg.Lat,
+		arg.Lng,
+		arg.NumberOfPlatforms,
+		arg.StationType,
+		arg.StationCategory,
+		arg.TrackType,
+	)
+	return err
+}
+
+const upsertTrain = `-- name: UpsertTrain :exec
+INSERT INTO trains (
+  train_no,
+  train_name,
+  train_type,
+  zone,
+  return_train_no,
+  coachComposition,
+  source_url,
+  created_at,
+  updated_at
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4,
+  ?5,
+  ?6,
+  ?7,
+  COALESCE(?8, CURRENT_TIMESTAMP),
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT(train_no) DO UPDATE
+SET
+  train_name = excluded.train_name,
+  train_type = excluded.train_type,
+  zone = excluded.zone,
+  return_train_no = excluded.return_train_no,
+  coachComposition = excluded.coachComposition,
+  source_url = excluded.source_url,
+  updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertTrainParams struct {
+	TrainNo          int64          `json:"train_no"`
+	TrainName        string         `json:"train_name"`
+	TrainType        string         `json:"train_type"`
+	Zone             sql.NullString `json:"zone"`
+	ReturnTrainNo    sql.NullInt64  `json:"return_train_no"`
+	CoachComposition sql.NullString `json:"coachComposition"`
+	SourceUrl        string         `json:"source_url"`
+	CreatedAt        interface{}    `json:"created_at"`
+}
+
+// Upserts a train record
+func (q *Queries) UpsertTrain(ctx context.Context, arg UpsertTrainParams) error {
+	_, err := q.db.ExecContext(ctx, upsertTrain,
+		arg.TrainNo,
+		arg.TrainName,
+		arg.TrainType,
+		arg.Zone,
+		arg.ReturnTrainNo,
+		arg.CoachComposition,
+		arg.SourceUrl,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const upsertTrainRoute = `-- name: UpsertTrainRoute :exec
+INSERT INTO train_routes (
+  schedule_id,
+  station_code,
+  distance_km,
+  sch_arrival_min_from_start,
+  sch_departure_min_from_start,
+  stops
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4,
+  ?5,
+  ?6
+)
+ON CONFLICT(schedule_id, station_code) DO UPDATE
+SET
+  distance_km = excluded.distance_km,
+  sch_arrival_min_from_start = excluded.sch_arrival_min_from_start,
+  sch_departure_min_from_start = excluded.sch_departure_min_from_start,
+  stops = excluded.stops
+`
+
+type UpsertTrainRouteParams struct {
+	ScheduleID               int64   `json:"schedule_id"`
+	StationCode              string  `json:"station_code"`
+	DistanceKm               float64 `json:"distance_km"`
+	SchArrivalMinFromStart   int64   `json:"sch_arrival_min_from_start"`
+	SchDepartureMinFromStart int64   `json:"sch_departure_min_from_start"`
+	Stops                    int64   `json:"stops"`
+}
+
+// Upserts a train route record
+func (q *Queries) UpsertTrainRoute(ctx context.Context, arg UpsertTrainRouteParams) error {
+	_, err := q.db.ExecContext(ctx, upsertTrainRoute,
+		arg.ScheduleID,
+		arg.StationCode,
+		arg.DistanceKm,
+		arg.SchArrivalMinFromStart,
+		arg.SchDepartureMinFromStart,
+		arg.Stops,
 	)
 	return err
 }
@@ -236,4 +421,63 @@ func (q *Queries) UpsertTrainRun(ctx context.Context, arg UpsertTrainRunParams) 
 		arg.RunDate,
 	)
 	return err
+}
+
+const upsertTrainSchedule = `-- name: UpsertTrainSchedule :one
+INSERT INTO train_schedules (
+  train_no,
+  origin_station_code,
+  terminus_station_code,
+  origin_sch_departure_min,
+  total_distance_km,
+  total_runtime_min,
+  running_days_bitmap,
+  created_at,
+  updated_at
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4,
+  ?5,
+  ?6,
+  ?7,
+  COALESCE(?8, CURRENT_TIMESTAMP),
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT(train_no, origin_station_code, terminus_station_code, origin_sch_departure_min) DO UPDATE
+SET
+  total_distance_km = excluded.total_distance_km,
+  total_runtime_min = excluded.total_runtime_min,
+  running_days_bitmap = excluded.running_days_bitmap,
+  updated_at = CURRENT_TIMESTAMP
+RETURNING schedule_id
+`
+
+type UpsertTrainScheduleParams struct {
+	TrainNo               int64       `json:"train_no"`
+	OriginStationCode     string      `json:"origin_station_code"`
+	TerminusStationCode   string      `json:"terminus_station_code"`
+	OriginSchDepartureMin int64       `json:"origin_sch_departure_min"`
+	TotalDistanceKm       float64     `json:"total_distance_km"`
+	TotalRuntimeMin       int64       `json:"total_runtime_min"`
+	RunningDaysBitmap     int64       `json:"running_days_bitmap"`
+	CreatedAt             interface{} `json:"created_at"`
+}
+
+// Upserts a train schedule and returns the schedule_id
+func (q *Queries) UpsertTrainSchedule(ctx context.Context, arg UpsertTrainScheduleParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, upsertTrainSchedule,
+		arg.TrainNo,
+		arg.OriginStationCode,
+		arg.TerminusStationCode,
+		arg.OriginSchDepartureMin,
+		arg.TotalDistanceKm,
+		arg.TotalRuntimeMin,
+		arg.RunningDaysBitmap,
+		arg.CreatedAt,
+	)
+	var schedule_id int64
+	err := row.Scan(&schedule_id)
+	return schedule_id, err
 }

@@ -176,10 +176,10 @@ func handleShortResponse(ctx context.Context, queries *db.Queries, run db.ListRu
 	}
 
 	if err := queries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
-		RunID:      run.RunID,
-		HasArrived: 1,
-		EndReason:  sql.NullString{String: endReason, Valid: true},
-		Errors:     updatedErrors,
+		RunID:         run.RunID,
+		HasArrived:    1,
+		CurrentStatus: sql.NullString{String: endReason, Valid: true},
+		Errors:        updatedErrors,
 	}); err != nil {
 		return fmt.Errorf("failed to update run status: %w", err)
 	}
@@ -285,7 +285,7 @@ func processValidResponse(ctx context.Context, queries *db.Queries, sqlDB *sql.D
 		RunID:         run.RunID,
 		HasStarted:    1,
 		HasArrived:    hasArrived,
-		EndReason:     sql.NullString{String: endReason, Valid: isEnded},
+		CurrentStatus:     sql.NullString{String: endReason, Valid: isEnded},
 		Lat:           sql.NullFloat64{Float64: lat, Valid: true},
 		Lng:           sql.NullFloat64{Float64: lng, Valid: true},
 		LastUpdateIso: sql.NullString{String: data.LastUpdateIsoDate, Valid: true},
