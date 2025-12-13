@@ -60,10 +60,10 @@ type DaySchedule struct {
 	SchArrivalDate      string         `json:"sch_arrival_date"`
 	Departed            *bool          `json:"departed,omitempty"`
 	ActualDepartureTime string         `json:"actual_departure_time,omitempty"`
-	DelayInDeparture    int64          `json:"delay_in_departure,omitempty"`
+	DelayInDeparture    float64        `json:"delay_in_departure,omitempty"`
 	ActualDepartureTm   int64          `json:"actual_departure_tm,omitempty"`
 	ActualDepartureDate string         `json:"actual_departure_date,omitempty"`
-	DelayInArrival      int64          `json:"delay_in_arrival,omitempty"`
+	DelayInArrival      float64        `json:"delay_in_arrival,omitempty"`
 	CurStn              *bool          `json:"curStn,omitempty"`
 	NonAggDepartureTm   *int64         `json:"non_agg_departure_tm,omitempty"`
 	NonAggDepartureDate string         `json:"non_agg_departure_date,omitempty"`

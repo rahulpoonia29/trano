@@ -26,6 +26,15 @@ type ErrorEntry struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type LastStationSnapshot struct {
+	Sno         int
+	StationCode string
+	SchArrMin   int
+	ActArrMin   int
+	SchDepMin   int
+	ActDepMin   int
+}
+
 // Start blocks until ctx is cancelled.
 // Calls executeCycle repeatedly and ensures each cycle lasts at least cfg.Window
 func Start(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, logger *log.Logger, cfg Config, loc *time.Location) {
@@ -33,7 +42,7 @@ func Start(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, logger *log.
 		cfg.Concurrency = 1
 	}
 	if cfg.Window <= 0 {
-		cfg.Window = 2 * time.Minute
+		cfg.Window = 1 * time.Minute
 	}
 	if cfg.ErrorThreshold <= 0 {
 		cfg.ErrorThreshold = 3
@@ -169,7 +178,8 @@ func handleShortResponse(ctx context.Context, queries *db.Queries, run db.ListRu
 		return nil
 	}
 
-	updatedErrors, err := appendToErrorsJSON(run.Errors, errorMsg)
+	currentErrors := json.RawMessage(run.Errors)
+	updatedErrors, err := appendToErrorsJSON(currentErrors, errorMsg)
 	if err != nil {
 		logger.Printf("failed to append error for %s: %v", run.RunID, err)
 		return nil
@@ -179,7 +189,7 @@ func handleShortResponse(ctx context.Context, queries *db.Queries, run db.ListRu
 		RunID:         run.RunID,
 		HasArrived:    1,
 		CurrentStatus: sql.NullString{String: endReason, Valid: true},
-		Errors:        updatedErrors,
+		Errors:        sql.NullString{String: string(updatedErrors), Valid: true},
 	}); err != nil {
 		return fmt.Errorf("failed to update run status: %w", err)
 	}
@@ -188,16 +198,18 @@ func handleShortResponse(ctx context.Context, queries *db.Queries, run db.ListRu
 }
 
 func handleStaticResponse(ctx context.Context, queries *db.Queries, run db.ListRunsToPollRow, bodyStr string, logger *log.Logger) error {
-	errorMsg := "static_response"
+	errorMsg := "static_response: " + bodyStr
 
-	updatedErrors, err := appendToErrorsJSON(run.Errors, errorMsg)
+	// Convert run.Errors (string) to json.RawMessage
+	currentErrors := json.RawMessage(run.Errors)
+	updatedErrors, err := appendToErrorsJSON(currentErrors, errorMsg)
 	if err != nil {
 		logger.Printf("failed to append static response error for %s: %v", run.RunID, err)
 	}
 
 	if err := queries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
 		RunID:  run.RunID,
-		Errors: updatedErrors,
+		Errors: sql.NullString{String: string(updatedErrors), Valid: true},
 	}); err != nil {
 		return fmt.Errorf("failed to update run status for static response: %w", err)
 	}
@@ -246,6 +258,17 @@ func processValidResponse(ctx context.Context, queries *db.Queries, sqlDB *sql.D
 		return nil
 	}
 
+	// Find the current station in DaysSchedule, if any
+	var currStn *wimt.DaySchedule
+	for i := range data.DaysSchedule {
+		if data.DaysSchedule[i].CurStn != nil && *data.DaysSchedule[i].CurStn {
+			currStn = &data.DaysSchedule[i]
+			break
+		}
+	}
+
+	lastUpdatedSno := SnoStrFromDaySchedule(currStn)
+
 	status := strings.ToLower(data.RunningStatus)
 	if status == "" {
 		status = strings.ToLower(data.RunningStatusAlt)
@@ -282,13 +305,14 @@ func processValidResponse(ctx context.Context, queries *db.Queries, sqlDB *sql.D
 	txQueries := queries.WithTx(tx)
 
 	if err := txQueries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
-		RunID:         run.RunID,
-		HasStarted:    1,
-		HasArrived:    hasArrived,
-		CurrentStatus:     sql.NullString{String: endReason, Valid: isEnded},
-		Lat:           sql.NullFloat64{Float64: lat, Valid: true},
-		Lng:           sql.NullFloat64{Float64: lng, Valid: true},
-		LastUpdateIso: sql.NullString{String: data.LastUpdateIsoDate, Valid: true},
+		RunID:          run.RunID,
+		HasStarted:     1,
+		HasArrived:     hasArrived,
+		CurrentStatus:  sql.NullString{String: endReason, Valid: isEnded},
+		Lat:            sql.NullFloat64{Float64: lat, Valid: true},
+		Lng:            sql.NullFloat64{Float64: lng, Valid: true},
+		LastUpdatedSno: sql.NullString{String: lastUpdatedSno, Valid: true},
+		LastUpdateIso:  sql.NullString{String: data.LastUpdateIsoDate, Valid: true},
 	}); err != nil {
 		return fmt.Errorf("failed to update run status: %w", err)
 	}
@@ -312,7 +336,8 @@ func processValidResponse(ctx context.Context, queries *db.Queries, sqlDB *sql.D
 func appendToErrorsJSON(currentErrors json.RawMessage, reason string) (json.RawMessage, error) {
 	var errors []ErrorEntry
 
-	if len(currentErrors) > 0 {
+	// Handle empty or invalid JSON
+	if len(currentErrors) > 0 && string(currentErrors) != "null" && string(currentErrors) != "" {
 		if err := json.Unmarshal(currentErrors, &errors); err != nil {
 			// If unmarshal fails, start fresh
 			errors = []ErrorEntry{}
@@ -330,4 +355,44 @@ func appendToErrorsJSON(currentErrors json.RawMessage, reason string) (json.RawM
 	}
 
 	return json.RawMessage(errorsJSON), nil
+}
+
+func SnoStrFromDaySchedule(ds *wimt.DaySchedule) string {
+	if ds == nil {
+		return "-1|-1|-1|-1|-1|-1"
+	}
+	sno := ds.Sno
+	stationCode := ds.StationCode
+	schArrMin := epochToMinFromMidnight(ds.SchArrivalTm)
+	actArrMin := epochToMinFromMidnight(ds.ActualArrivalTm)
+	schDepMin := epochToMinFromMidnight(ds.SchDepartureTm)
+	actDepMin := epochToMinFromMidnight(ds.ActualDepartureTm)
+
+	// If any field fails (is -1 or empty), return all -1s
+	if sno < 0 ||
+		stationCode == "" ||
+		schArrMin < 0 ||
+		actArrMin < 0 ||
+		schDepMin < 0 ||
+		actDepMin < 0 {
+		return "-1|-1|-1|-1|-1|-1"
+	}
+
+	return fmt.Sprintf(
+		"%d|%s|%d|%d|%d|%d",
+		sno,
+		stationCode,
+		schArrMin,
+		actArrMin,
+		schDepMin,
+		actDepMin,
+	)
+}
+
+func epochToMinFromMidnight(epoch int64) int {
+	if epoch <= 0 {
+		return -1
+	}
+	t := time.Unix(epoch, 0)
+	return t.Hour()*60 + t.Minute()
 }

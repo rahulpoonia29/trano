@@ -6,7 +6,6 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
 )
 
 type Station struct {
@@ -57,18 +56,22 @@ type TrainRun struct {
 	CurrentStatus          sql.NullString  `json:"current_status"`
 	LastKnownLat           sql.NullFloat64 `json:"last_known_lat"`
 	LastKnownLng           sql.NullFloat64 `json:"last_known_lng"`
+	Errors                 sql.NullString  `json:"errors"`
+	LastUpdatedSno         sql.NullString  `json:"last_updated_sno"`
 	LastUpdateTimestampIso sql.NullString  `json:"last_update_timestamp_iso"`
-	Errors                 json.RawMessage `json:"errors"`
-	CreatedAt              sql.NullString  `json:"created_at"`
-	UpdatedAt              sql.NullString  `json:"updated_at"`
+	CreatedAt              string          `json:"created_at"`
+	UpdatedAt              string          `json:"updated_at"`
 }
 
 type TrainRunLocation struct {
-	ID           int64   `json:"id"`
-	RunID        string  `json:"run_id"`
-	Lat          float64 `json:"lat"`
-	Lng          float64 `json:"lng"`
-	TimestampIso string  `json:"timestamp_iso"`
+	ID                 int64         `json:"id"`
+	RunID              string        `json:"run_id"`
+	Lat                float64       `json:"lat"`
+	Lng                float64       `json:"lng"`
+	DistanceKm         float64       `json:"distance_km"`
+	SegmentStationCode string        `json:"segment_station_code"`
+	AtStation          sql.NullInt64 `json:"at_station"`
+	TimestampIso       string        `json:"timestamp_iso"`
 }
 
 type TrainSchedule struct {

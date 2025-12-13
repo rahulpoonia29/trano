@@ -8,7 +8,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 )
 
 const listActiveSchedules = `-- name: ListActiveSchedules :many
@@ -65,14 +64,16 @@ SELECT
     tr.last_known_lat,
     tr.last_known_lng,
     tr.last_update_timestamp_ISO,
-    tr.errors,
+    COALESCE(tr.errors, '[]') AS errors,
     ts.origin_station_code AS source_station,
     ts.terminus_station_code AS destination_station
 FROM train_runs tr
 JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
 WHERE tr.has_arrived = 0
-    AND tr.run_date = CAST(?1 AS TEXT)
-    AND COALESCE(json_array_length(tr.errors), 0) < CAST(?2 AS INTEGER)
+  AND tr.run_date = CAST(?1 AS TEXT)
+  AND COALESCE(json_array_length(tr.errors), 0) < CAST(?2 AS INTEGER)
+  AND datetime(tr.run_date || ' 00:00')
+      <= datetime('now', '-' || ts.origin_sch_departure_min || ' minutes')
 ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST
 `
 
@@ -88,7 +89,7 @@ type ListRunsToPollRow struct {
 	LastKnownLat           sql.NullFloat64 `json:"last_known_lat"`
 	LastKnownLng           sql.NullFloat64 `json:"last_known_lng"`
 	LastUpdateTimestampIso sql.NullString  `json:"last_update_timestamp_iso"`
-	Errors                 json.RawMessage `json:"errors"`
+	Errors                 string          `json:"errors"`
 	SourceStation          string          `json:"source_station"`
 	DestinationStation     string          `json:"destination_station"`
 }
@@ -129,18 +130,21 @@ func (q *Queries) ListRunsToPoll(ctx context.Context, arg ListRunsToPollParams) 
 
 const logRunLocation = `-- name: LogRunLocation :exec
 INSERT INTO train_run_locations (
-  run_id, lat, lng, timestamp_ISO
+  run_id, lat, lng, distance_km, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
-  ?1, ?2, ?3, ?4
+  ?1, ?2, ?3, ?4, ?5, COALESCE(?6, 0), ?7
 )
 ON CONFLICT(run_id, timestamp_ISO) DO NOTHING
 `
 
 type LogRunLocationParams struct {
-	RunID        string  `json:"run_id"`
-	Lat          float64 `json:"lat"`
-	Lng          float64 `json:"lng"`
-	TimestampIso string  `json:"timestamp_iso"`
+	RunID              string      `json:"run_id"`
+	Lat                float64     `json:"lat"`
+	Lng                float64     `json:"lng"`
+	DistanceKm         float64     `json:"distance_km"`
+	SegmentStationCode string      `json:"segment_station_code"`
+	AtStation          interface{} `json:"at_station"`
+	TimestampIso       string      `json:"timestamp_iso"`
 }
 
 // Inserts into the time-series tracking table
@@ -149,6 +153,9 @@ func (q *Queries) LogRunLocation(ctx context.Context, arg LogRunLocationParams) 
 		arg.RunID,
 		arg.Lat,
 		arg.Lng,
+		arg.DistanceKm,
+		arg.SegmentStationCode,
+		arg.AtStation,
 		arg.TimestampIso,
 	)
 	return err
@@ -162,21 +169,23 @@ SET
   current_status            = COALESCE(?3, current_status),
   last_known_lat            = COALESCE(?4, last_known_lat),
   last_known_lng            = COALESCE(?5, last_known_lng),
-  last_update_timestamp_ISO = COALESCE(?6, last_update_timestamp_ISO),
-  errors                    = COALESCE(?7, errors),
+  errors                    = COALESCE(?6, errors),
+  last_updated_sno          = COALESCE(?7, last_updated_sno),
+  last_update_timestamp_ISO = COALESCE(?8, last_update_timestamp_ISO),
   updated_at                = CURRENT_TIMESTAMP
-WHERE run_id = ?8
+WHERE run_id = ?9
 `
 
 type UpdateRunStatusParams struct {
-	HasStarted    int64           `json:"has_started"`
-	HasArrived    int64           `json:"has_arrived"`
-	CurrentStatus sql.NullString  `json:"current_status"`
-	Lat           sql.NullFloat64 `json:"lat"`
-	Lng           sql.NullFloat64 `json:"lng"`
-	LastUpdateIso sql.NullString  `json:"last_update_iso"`
-	Errors        json.RawMessage `json:"errors"`
-	RunID         string          `json:"run_id"`
+	HasStarted     int64           `json:"has_started"`
+	HasArrived     int64           `json:"has_arrived"`
+	CurrentStatus  sql.NullString  `json:"current_status"`
+	Lat            sql.NullFloat64 `json:"lat"`
+	Lng            sql.NullFloat64 `json:"lng"`
+	Errors         sql.NullString  `json:"errors"`
+	LastUpdatedSno sql.NullString  `json:"last_updated_sno"`
+	LastUpdateIso  sql.NullString  `json:"last_update_iso"`
+	RunID          string          `json:"run_id"`
 }
 
 // Updates the main run state
@@ -187,8 +196,9 @@ func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams
 		arg.CurrentStatus,
 		arg.Lat,
 		arg.Lng,
-		arg.LastUpdateIso,
 		arg.Errors,
+		arg.LastUpdatedSno,
+		arg.LastUpdateIso,
 		arg.RunID,
 	)
 	return err

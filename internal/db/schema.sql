@@ -92,10 +92,11 @@ CREATE TABLE
         current_status TEXT, -- e.g. "Running", "Diverted", "Rescheduled"
         last_known_lat REAL,
         last_known_lng REAL,
+        errors TEXT DEFAULT '[]',
+        last_updated_sno TEXT,
         last_update_timestamp_ISO TEXT, -- ISO format, API example: 2025-12-10T22:04:33.019687+05:30
-        errors JSON,
-        created_at TEXT DEFAULT (CURRENT_TIMESTAMP), -- ISO: YYYY-MM-DD HH:MM:SS
-        updated_at TEXT DEFAULT (CURRENT_TIMESTAMP), -- ISO: YYYY-MM-DD HH:MM:SS
+        created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
+        updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
         FOREIGN KEY (schedule_id) REFERENCES train_schedules (schedule_id) ON DELETE CASCADE,
         FOREIGN KEY (train_no) REFERENCES trains (train_no) ON DELETE CASCADE,
         UNIQUE (train_no, run_date)
@@ -111,6 +112,9 @@ CREATE TABLE
         run_id TEXT NOT NULL,
         lat REAL NOT NULL,
         lng REAL NOT NULL,
+        distance_km REAL NOT NULL,
+        segment_station_code TEXT NOT NULL,
+        at_station INTEGER DEFAULT 0,
         timestamp_ISO TEXT NOT NULL, -- ISO timestamp
         FOREIGN KEY (run_id) REFERENCES train_runs (run_id) ON DELETE CASCADE,
         UNIQUE (run_id, timestamp_ISO)

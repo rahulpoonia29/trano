@@ -7,6 +7,27 @@ SELECT
   terminus_station_code
 FROM train_schedules ts
 WHERE (ts.running_days_bitmap & (1 << @weekday)) <> 0;
+-- AND t.train_type IN (
+--   'Rajdhani',
+--   'Shatabdi',
+--   'Jan Shatabdi',
+--   'Duronto',
+--   'Tejas',
+--   'Vande Bharat',
+--   'SuperFast',
+--   'AC SuperFast',
+--   'AC Express',
+--   'Mail/Express',
+--   'Sampark Kranti',
+--   'Garib Rath',
+--   'Humsafar',
+--   'Antyodaya',
+--   'Amrit Bharat',
+--   'Double Decker',
+--   'Uday',
+--   'Suvidha',
+--   'Namo Bharat'
+-- );
 
 -- name: UpsertTrainRun :exec
 -- Creates a run instance. run_id format: trainNo_YYYY-MM-DD
@@ -43,14 +64,16 @@ SELECT
     tr.last_known_lat,
     tr.last_known_lng,
     tr.last_update_timestamp_ISO,
-    tr.errors,
+    COALESCE(tr.errors, '[]') AS errors,
     ts.origin_station_code AS source_station,
     ts.terminus_station_code AS destination_station
 FROM train_runs tr
 JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
 WHERE tr.has_arrived = 0
-    AND tr.run_date = CAST(@target_date AS TEXT)
-    AND COALESCE(json_array_length(tr.errors), 0) < CAST(@threshold AS INTEGER)
+  AND tr.run_date = CAST(@target_date AS TEXT)
+  AND COALESCE(json_array_length(tr.errors), 0) < CAST(@threshold AS INTEGER)
+  AND datetime(tr.run_date || ' 00:00')
+      <= datetime('now', '-' || ts.origin_sch_departure_min || ' minutes')
 ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST;
 
 -- name: UpdateRunStatus :exec
@@ -62,17 +85,18 @@ SET
   current_status            = COALESCE(@current_status, current_status),
   last_known_lat            = COALESCE(@lat, last_known_lat),
   last_known_lng            = COALESCE(@lng, last_known_lng),
-  last_update_timestamp_ISO = COALESCE(@last_update_iso, last_update_timestamp_ISO),
   errors                    = COALESCE(@errors, errors),
+  last_updated_sno          = COALESCE(@last_updated_sno, last_updated_sno),
+  last_update_timestamp_ISO = COALESCE(@last_update_iso, last_update_timestamp_ISO),
   updated_at                = CURRENT_TIMESTAMP
 WHERE run_id = @run_id;
 
 -- name: LogRunLocation :exec
 -- Inserts into the time-series tracking table
 INSERT INTO train_run_locations (
-  run_id, lat, lng, timestamp_ISO
+  run_id, lat, lng, distance_km, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
-  @run_id, @lat, @lng, @timestamp_iso
+  @run_id, @lat, @lng, @distance_km, @segment_station_code, COALESCE(@at_station, 0), @timestamp_iso
 )
 ON CONFLICT(run_id, timestamp_ISO) DO NOTHING;
 
