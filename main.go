@@ -72,7 +72,7 @@ func main() {
 	}
 
 	// Updated client creation to match new NewClient signature
-	client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 30), nil)
+	client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 15), nil)
 
 	logger.Printf("running initial sync with %d trains", len(urls))
 	if err := client.ExecuteSyncCycle(ctx, dbConn, logger, int(cfg.Syncer.Concurrency), urls); err != nil {
@@ -225,8 +225,8 @@ func loadTrainURLs(isTest bool) []string {
 		}
 	}
 
-	// file, err := os.Open("./data/train_urls.csv")
-	file, err := os.Open("./data/hmm.csv")
+	file, err := os.Open("./data/train_urls.csv")
+	// file, err := os.Open("./data/hmm.csv")
 	if err != nil {
 		log.Printf("failed to open train_urls.csv: %v", err)
 		return nil

@@ -3,16 +3,19 @@ package iri
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	url_pkg "net/url"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	db "trano/internal/db/sqlc"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/imroc/req/v3"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 )
@@ -78,74 +81,168 @@ type RouteData struct {
 	Stops                    int
 }
 
-func (c *Client) FetchTrainData(ctx context.Context, url string) (*TrainData, []*StationData, *ScheduleData, error) {
+func (c *Client) FetchTrainData(
+	ctx context.Context,
+	targetURL string,
+) (*TrainData, []*StationData, *ScheduleData, error) {
+
+	// Rate limiting
 	if c.limiter != nil {
 		if err := c.limiter.Wait(ctx); err != nil {
 			return nil, nil, nil, err
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, nil, nil, err
+	// Single persistent client (cookies, headers, TLS fingerprint stay consistent)
+	client := req.C().
+		SetTimeout(30 * time.Second)
+
+	// Establish session
+	// homeResp, err := client.R().
+	// 	SetHeaders(map[string]string{
+	// 		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+	// 		"Accept-Encoding":           "gzip, deflate, br, zstd",
+	// 		"Accept-Language":           "en-US,en;q=0.9",
+	// 		"Cache-Control":             "no-cache",
+	// 		"Pragma":                    "no-cache",
+	// 		"Priority":                  "u=0, i",
+	// 		"Sec-Ch-Ua":                 `"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
+	// 		"Sec-Ch-Ua-Mobile":          "?0",
+	// 		"Sec-Ch-Ua-Platform":        `"Windows"`,
+	// 		"Sec-Fetch-Dest":            "document",
+	// 		"Sec-Fetch-Mode":            "navigate",
+	// 		"Sec-Fetch-Site":            "none",
+	// 		"Sec-Fetch-User":            "?1",
+	// 		"Upgrade-Insecure-Requests": "1",
+	// 		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+	// 	}).
+	// 	Get("https://indiarailinfo.com/")
+	// if err != nil {
+	// 	return nil, nil, nil, err
+	// }
+	// homeResp.Body.Close()
+	// time.Sleep(time.Duration(500+rand.Intn(500)) * time.Millisecond)
+
+	// // First page request
+	// resp, err := client.R().
+	// 	SetContext(ctx).
+	// 	SetHeaders(map[string]string{
+	// 		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+	// 		"Accept-Encoding":           "gzip, deflate, br, zstd",
+	// 		"Accept-Language":           "en-US,en;q=0.9",
+	// 		"Cache-Control":             "no-cache",
+	// 		"Pragma":                    "no-cache",
+	// 		"Priority":                  "u=0, i",
+	// 		"Sec-Ch-Ua":                 `"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
+	// 		"Sec-Ch-Ua-Mobile":          "?0",
+	// 		"Sec-Ch-Ua-Platform":        `"Windows"`,
+	// 		"Sec-Fetch-Dest":            "document",
+	// 		"Sec-Fetch-Mode":            "navigate",
+	// 		"Sec-Fetch-Site":            "cross-site",
+	// 		"Sec-Fetch-User":            "?1",
+	// 		"Upgrade-Insecure-Requests": "1",
+	// 		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+	// 	}).
+	// 	Get(targetURL)
+	// if err != nil {
+	// 	return nil, nil, nil, fmt.Errorf("initial request failed: %w", err)
+	// }
+	// defer resp.Body.Close()
+
+	// if resp.StatusCode != http.StatusOK {
+	// 	return nil, nil, nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
+	// }
+
+	// docMain, err := goquery.NewDocumentFromReader(resp.Body)
+	// if err != nil {
+	// 	return nil, nil, nil, fmt.Errorf("html parse failed: %w", err)
+	// }
+
+	// // Find timetable link
+	// timetableHref, exists := docMain.Find("a[href*='/train/timetable/all/']").Attr("href")
+	// if !exists {
+	// 	return nil, nil, nil, fmt.Errorf("timetable link not found")
+	// }
+
+	// baseURL, err := url_pkg.Parse(targetURL)
+	// if err != nil {
+	// 	return nil, nil, nil, err
+	// }
+
+	// timetableURL := baseURL.ResolveReference(&url_pkg.URL{
+	// 	Path: timetableHref,
+	// }).String()
+
+	// time.Sleep(time.Duration(700+rand.Intn(1300)) * time.Millisecond)
+
+	// Check if targetURL is valid and points to a train page
+	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+		return nil, nil, nil, fmt.Errorf("targetURL must start with http:// or https://: %s", targetURL)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	resp, err := c.httpClient.Do(req)
+	parsed, err := url.Parse(targetURL)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("http request failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid targetURL: %w", err)
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 2 || parts[0] != "train" {
+		return nil, nil, nil, fmt.Errorf("unexpected targetURL path (should be /train/number): %s", parsed.Path)
+	}
+	identifier := parts[len(parts)-1]
+	timetableURL := fmt.Sprintf("%s://%s/train/timetable/all/%s", parsed.Scheme, parsed.Host, identifier)
+
+	// log.Println(timetableURL)
+	//
+	if c.limiter != nil {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	// Timetable page request
+	resp, err := client.R().
+		SetHeaders(map[string]string{
+			"Accept": "text/html",
+			// "Accept-Encoding":           "gzip, deflate, br, zstd",
+			"Accept-Language": "en-US,en;q=0.9",
+			"Cache-Control":   "no-cache",
+			"Pragma":          "no-cache",
+			// "Priority":                  "u=0, i",
+			// "Referer":                   targetURL,
+			// "Sec-Ch-Ua":                 `"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
+			// "Sec-Ch-Ua-Mobile":          "?0",
+			// "Sec-Ch-Ua-Platform":        `"Windows"`,
+			// "Sec-Fetch-Dest":            "document",
+			// "Sec-Fetch-Mode":            "navigate",
+			// "Sec-Fetch-Site":            "same-origin",
+			// "Sec-Fetch-User":            "?1",
+			// "Upgrade-Insecure-Requests": "1",
+			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+		}).
+		Get(timetableURL)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("timetable request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
+		return nil, nil, nil, fmt.Errorf("timetable unexpected status %d", resp.StatusCode)
 	}
 
-	docMain, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("html parse failed: %w", err)
-	}
+	// Save the response body to a file
+	// bodyBytes, err := io.ReadAll(resp.Body)
+	// if err != nil {
+	// 	return nil, nil, nil, fmt.Errorf("failed to read response body: %w", err)
+	// }
+	// if err := os.WriteFile(identifier+".html", bodyBytes, 0644); err != nil {
+	// 	return nil, nil, nil, fmt.Errorf("failed to write file: %w", err)
+	// }
 
-	// Find full timetable URL
-	timetableHref, exists := docMain.Find("a[href*='/train/timetable/all/']").Attr("href")
-	if !exists {
-		return nil, nil, nil, fmt.Errorf("timetable link not found")
-	}
-
-	baseURL, err := url_pkg.Parse(url)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	timetableURL := baseURL.ResolveReference(&url_pkg.URL{Path: timetableHref}).String()
-
-	// Fetch timetable page
-	if c.limiter != nil {
-		if err := c.limiter.Wait(ctx); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-
-	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, timetableURL, nil)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	resp2, err := c.httpClient.Do(req2)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("timetable http request failed: %w", err)
-	}
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		return nil, nil, nil, fmt.Errorf("timetable unexpected status code %d", resp2.StatusCode)
-	}
-
-	docTimetable, err := goquery.NewDocumentFromReader(resp2.Body)
+	docTimetable, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("timetable html parse failed: %w", err)
 	}
 
-	trainData, stationData, scheduleData, err := c.parseTrainData(docTimetable, url)
+	trainData, stationData, scheduleData, err := c.parseTrainData(docTimetable, targetURL)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -167,10 +264,15 @@ func (c *Client) parseTrainData(doc *goquery.Document, sourceURL string) (*Train
 	if strings.Contains(divText, "/") {
 		parts := strings.SplitN(divText, "/", 2)
 		trainNoStr := strings.TrimSpace(parts[0])
-		// If contains ⇒, take the part after it as the newer train number
+		// If contains ⇒, take the part before it as the main train number
 		if strings.Contains(trainNoStr, "⇒") {
 			trainNoParts := strings.Split(trainNoStr, "⇒")
-			trainNoStr = strings.TrimSpace(trainNoParts[len(trainNoParts)-1])
+			trainNoStr = strings.TrimSpace(trainNoParts[0])
+		}
+		// Remove any trailing non-digit characters (e.g., X, A, etc.)
+		re := regexp.MustCompile(`^(\d+)`)
+		if m := re.FindStringSubmatch(trainNoStr); len(m) > 1 {
+			trainNoStr = m[1]
 		}
 		if trainNoStr != "" {
 			if no, err := strconv.ParseInt(trainNoStr, 10, 64); err == nil {
@@ -524,10 +626,13 @@ func (c *Client) ExecuteSyncCycle(ctx context.Context, dbConn *sql.DB, logger *l
 		g.Go(func() error {
 			train, stations, schedule, err := c.FetchTrainData(gctx, url)
 			if err != nil {
-				logger.Printf("failed to fetch %s: %v", url, err)
+				if !errors.Is(err, context.Canceled) {
+					logger.Printf("failed to fetch %s : %v", url, err)
+				}
 				return nil
 				// return err
 			}
+			// logger.Println("Got the data yey", url, train.TrainName, len(stations))
 			if err := saver.SaveTrainData(gctx, train); err != nil {
 				logger.Printf("failed to save train %s: %v", url, err)
 				return err
@@ -557,6 +662,7 @@ func (c *Client) ExecuteSyncCycle(ctx context.Context, dbConn *sql.DB, logger *l
 				}
 				return err
 			}
+			logger.Println("Processed ", url)
 			return nil
 		})
 	}

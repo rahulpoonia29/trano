@@ -48,7 +48,7 @@ func Load() *Config {
 			ErrorThreshold: int16(getEnvAsInt("POLLER_ERROR_THRESHOLD", 3)),
 		},
 		Syncer: SyncerConfig{
-			Concurrency: int16(getEnvAsInt("SYNCER_CONCURRENCY", 50)),
+			Concurrency: int16(getEnvAsInt("SYNCER_CONCURRENCY", 2)),
 		},
 		Timezone: getEnv("TIMEZONE", "Asia/Kolkata"),
 	}
