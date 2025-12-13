@@ -17,7 +17,7 @@ import (
 	"trano/internal/config"
 	db "trano/internal/db/sqlc"
 	"trano/internal/iri"
-	"trano/internal/schedular"
+	"trano/internal/scheduler"
 
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/time/rate"
@@ -82,7 +82,7 @@ func main() {
 
 	// startTime := time.Now().In(loc)
 	// logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
-	// schedular.GenerateRunsForDate(ctx, queries, logger, startTime)
+	// scheduler.GenerateRunsForDate(ctx, queries, logger, startTime)
 
 	// logger.Println("starting sync manager")
 	// go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
@@ -193,7 +193,7 @@ func runSchedulerTicker(ctx context.Context, queries *db.Queries, logger *log.Lo
 		case tick := <-ticker.C:
 			runDate := tick.In(loc)
 			logger.Printf("running scheduled generation for %s", runDate.Format(time.DateOnly))
-			schedular.GenerateRunsForDate(ctx, queries, logger, runDate)
+			scheduler.GenerateRunsForDate(ctx, queries, logger, runDate)
 		}
 	}
 }
@@ -226,7 +226,6 @@ func loadTrainURLs(isTest bool) []string {
 	}
 
 	file, err := os.Open("./data/train_urls.csv")
-	// file, err := os.Open("./data/hmm.csv")
 	if err != nil {
 		log.Printf("failed to open train_urls.csv: %v", err)
 		return nil
