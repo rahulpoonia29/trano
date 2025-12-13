@@ -86,8 +86,8 @@ func main() {
 	// logger.Println("starting sync manager")
 	// go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
 
-	// logger.Println("starting scheduler")
-	// go runSchedulerTicker(ctx, queries, logger, loc)
+	logger.Println("starting scheduler")
+	go runSchedulerTicker(ctx, queries, logger, loc)
 
 	logger.Println("starting poller")
 	go poller.Start(ctx, queries, dbConn, logger, pollerCfg, loc)
