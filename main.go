@@ -17,6 +17,7 @@ import (
 	"trano/internal/config"
 	db "trano/internal/db/sqlc"
 	"trano/internal/iri"
+	"trano/internal/poller"
 	"trano/internal/scheduler"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -51,19 +52,19 @@ func main() {
 	}()
 
 	configureConnectionPool(dbConn, cfg.Database, logger)
-	// queries := db.New(dbConn)
+	queries := db.New(dbConn)
 
-	// loc, err := time.LoadLocation(cfg.Timezone)
-	// if err != nil {
-	// 	logger.Fatalf("failed to load timezone: %v", err)
-	// }
+	loc, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		logger.Fatalf("failed to load timezone: %v", err)
+	}
 
-	// pollerCfg := poller.Config{
-	// 	Concurrency:    cfg.Poller.Concurrency,
-	// 	Window:         cfg.Poller.Window,
-	// 	ProxyURL:       cfg.Poller.ProxyURL,
-	// 	ErrorThreshold: cfg.Poller.ErrorThreshold,
-	// }
+	pollerCfg := poller.Config{
+		Concurrency:    cfg.Poller.Concurrency,
+		Window:         cfg.Poller.Window,
+		ProxyURL:       cfg.Poller.ProxyURL,
+		ErrorThreshold: cfg.Poller.ErrorThreshold,
+	}
 
 	urls := loadTrainURLs(*testFlag)
 	if len(urls) == 0 {
@@ -80,27 +81,27 @@ func main() {
 	}
 	logger.Println("initial sync completed")
 
-	// startTime := time.Now().In(loc)
-	// logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
-	// scheduler.GenerateRunsForDate(ctx, queries, logger, startTime)
+	startTime := time.Now().In(loc)
+	logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
+	scheduler.GenerateRunsForDate(ctx, queries, logger, startTime)
 
-	// logger.Println("starting sync manager")
-	// go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
+	logger.Println("starting sync manager")
+	go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
 
-	// logger.Println("starting scheduler")
-	// go runSchedulerTicker(ctx, queries, logger, loc)
+	logger.Println("starting scheduler")
+	go runSchedulerTicker(ctx, queries, logger, loc)
 
-	// logger.Println("starting poller")
-	// go poller.Start(ctx, queries, dbConn, logger, pollerCfg, loc)
+	logger.Println("starting poller")
+	go poller.Start(ctx, queries, dbConn, logger, pollerCfg, loc)
 
-	// <-ctx.Done()
-	// logger.Println("shutdown signal received, cleaning up...")
+	<-ctx.Done()
+	logger.Println("shutdown signal received, cleaning up...")
 
-	// shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	// defer shutdownCancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
-	// <-shutdownCtx.Done()
-	// logger.Println("application stopped")
+	<-shutdownCtx.Done()
+	logger.Println("application stopped")
 }
 
 func initDatabase(dbCfg config.DatabaseConfig, logger *log.Logger) (*sql.DB, error) {
