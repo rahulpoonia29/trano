@@ -459,16 +459,26 @@ func (c *Client) parseTrainData(doc *goquery.Document, sourceURL string) (*Train
 			arrMinFromStart := -1
 			depMinFromStart := -1
 
+			arrDay := day
+			depDay := day
+
+			// If both times exist and departure is before arrival, roll over the day
+			if arrMinFromMidnight >= 0 && depMinFromMidnight >= 0 {
+				if depMinFromMidnight < arrMinFromMidnight {
+					depDay = day + 1
+				}
+			}
+
 			if isOrigin {
 				arrMinFromStart = 0
 			} else if arrMinFromMidnight >= 0 && originDepTimeMin >= 0 {
-				arrMinFromStart = (day-1)*24*60 + arrMinFromMidnight - originDepTimeMin
+				arrMinFromStart = (arrDay-1)*24*60 + arrMinFromMidnight - originDepTimeMin
 			}
 
 			if isTerminus {
 				depMinFromStart = arrMinFromStart
 			} else if depMinFromMidnight >= 0 && originDepTimeMin >= 0 {
-				depMinFromStart = (day-1)*24*60 + depMinFromMidnight - originDepTimeMin
+				depMinFromStart = (depDay-1)*24*60 + depMinFromMidnight - originDepTimeMin
 			}
 
 			// Stop/pass determination
