@@ -112,7 +112,7 @@ CREATE TABLE
         run_id TEXT NOT NULL,
         lat_u6 INTEGER NOT NULL,
         lng_u6 INTEGER NOT NULL,
-        distance_km REAL NOT NULL,
+        distance_km_u4 INTEGER NOT NULL,
         segment_station_code TEXT NOT NULL,
         at_station INTEGER DEFAULT 0,
         timestamp_ISO TEXT NOT NULL, -- ISO timestamp

@@ -6,28 +6,28 @@ SELECT
   origin_station_code,
   terminus_station_code
 FROM train_schedules ts
-WHERE (ts.running_days_bitmap & (1 << @weekday)) <> 0;
--- AND t.train_type IN (
---   'Rajdhani',
---   'Shatabdi',
---   'Jan Shatabdi',
---   'Duronto',
---   'Tejas',
---   'Vande Bharat',
---   'SuperFast',
---   'AC SuperFast',
---   'AC Express',
---   'Mail/Express',
---   'Sampark Kranti',
---   'Garib Rath',
---   'Humsafar',
---   'Antyodaya',
---   'Amrit Bharat',
---   'Double Decker',
---   'Uday',
---   'Suvidha',
---   'Namo Bharat'
--- );
+WHERE (ts.running_days_bitmap & (1 << @weekday)) <> 0
+AND t.train_type IN (
+  'Rajdhani',
+  'Shatabdi',
+  'Jan Shatabdi',
+  'Duronto',
+  'Tejas',
+  'Vande Bharat',
+  'SuperFast',
+  'AC SuperFast',
+  'AC Express',
+  'Mail/Express',
+  'Sampark Kranti',
+  'Garib Rath',
+  'Humsafar',
+  'Antyodaya',
+  'Amrit Bharat',
+  'Double Decker',
+  'Uday',
+  'Suvidha',
+  'Namo Bharat'
+);
 
 -- name: UpsertTrainRun :exec
 -- Creates a run instance. run_id format: trainNo_YYYY-MM-DD
@@ -128,9 +128,9 @@ WHERE schedule_id = @schedule_id
 -- name: LogRunLocation :exec
 -- Inserts into the time-series tracking table
 INSERT INTO train_run_locations (
-  run_id, lat_u6, lng_u6, distance_km, segment_station_code, at_station, timestamp_ISO
+  run_id, lat_u6, lng_u6, distance_km_u4, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
-  @run_id, @lat_u6, @lng_u6, @distance_km, @segment_station_code, COALESCE(@at_station, 0), @timestamp_iso
+  @run_id, @lat_u6, @lng_u6, @distance_km_u4, @segment_station_code, COALESCE(@at_station, 0), @timestamp_iso
 )
 ON CONFLICT(run_id, timestamp_ISO) DO NOTHING;
 

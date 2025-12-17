@@ -41,6 +41,27 @@ SELECT
   terminus_station_code
 FROM train_schedules ts
 WHERE (ts.running_days_bitmap & (1 << ?1)) <> 0
+AND t.train_type IN (
+  'Rajdhani',
+  'Shatabdi',
+  'Jan Shatabdi',
+  'Duronto',
+  'Tejas',
+  'Vande Bharat',
+  'SuperFast',
+  'AC SuperFast',
+  'AC Express',
+  'Mail/Express',
+  'Sampark Kranti',
+  'Garib Rath',
+  'Humsafar',
+  'Antyodaya',
+  'Amrit Bharat',
+  'Double Decker',
+  'Uday',
+  'Suvidha',
+  'Namo Bharat'
+)
 `
 
 type ListActiveSchedulesRow struct {
@@ -182,7 +203,7 @@ func (q *Queries) ListRunsToPoll(ctx context.Context, arg ListRunsToPollParams) 
 
 const logRunLocation = `-- name: LogRunLocation :exec
 INSERT INTO train_run_locations (
-  run_id, lat_u6, lng_u6, distance_km, segment_station_code, at_station, timestamp_ISO
+  run_id, lat_u6, lng_u6, distance_km_u4, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, COALESCE(?6, 0), ?7
 )
@@ -193,7 +214,7 @@ type LogRunLocationParams struct {
 	RunID              string      `json:"run_id"`
 	LatU6              int64       `json:"lat_u6"`
 	LngU6              int64       `json:"lng_u6"`
-	DistanceKm         float64     `json:"distance_km"`
+	DistanceKmU4       int64       `json:"distance_km_u4"`
 	SegmentStationCode string      `json:"segment_station_code"`
 	AtStation          interface{} `json:"at_station"`
 	TimestampIso       string      `json:"timestamp_iso"`
@@ -205,7 +226,7 @@ func (q *Queries) LogRunLocation(ctx context.Context, arg LogRunLocationParams) 
 		arg.RunID,
 		arg.LatU6,
 		arg.LngU6,
-		arg.DistanceKm,
+		arg.DistanceKmU4,
 		arg.SegmentStationCode,
 		arg.AtStation,
 		arg.TimestampIso,
@@ -442,7 +463,6 @@ func (q *Queries) UpsertTrainRoute(ctx context.Context, arg UpsertTrainRoutePara
 }
 
 const upsertTrainRun = `-- name: UpsertTrainRun :exec
-
 INSERT INTO train_runs (
   run_id,
   schedule_id,
@@ -475,29 +495,6 @@ type UpsertTrainRunParams struct {
 	RunDate    string `json:"run_date"`
 }
 
-// AND t.train_type IN (
-//
-//	'Rajdhani',
-//	'Shatabdi',
-//	'Jan Shatabdi',
-//	'Duronto',
-//	'Tejas',
-//	'Vande Bharat',
-//	'SuperFast',
-//	'AC SuperFast',
-//	'AC Express',
-//	'Mail/Express',
-//	'Sampark Kranti',
-//	'Garib Rath',
-//	'Humsafar',
-//	'Antyodaya',
-//	'Amrit Bharat',
-//	'Double Decker',
-//	'Uday',
-//	'Suvidha',
-//	'Namo Bharat'
-//
-// );
 // Creates a run instance. run_id format: trainNo_YYYY-MM-DD
 func (q *Queries) UpsertTrainRun(ctx context.Context, arg UpsertTrainRunParams) error {
 	_, err := q.db.ExecContext(ctx, upsertTrainRun,

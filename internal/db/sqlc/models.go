@@ -70,7 +70,7 @@ type TrainRunLocation struct {
 	RunID              string        `json:"run_id"`
 	LatU6              int64         `json:"lat_u6"`
 	LngU6              int64         `json:"lng_u6"`
-	DistanceKm         float64       `json:"distance_km"`
+	DistanceKmU4       int64         `json:"distance_km_u4"`
 	SegmentStationCode string        `json:"segment_station_code"`
 	AtStation          sql.NullInt64 `json:"at_station"`
 	TimestampIso       string        `json:"timestamp_iso"`

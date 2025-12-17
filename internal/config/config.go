@@ -45,7 +45,7 @@ func Load() *Config {
 		Poller: PollerConfig{
 			Concurrency:          int16(getEnvAsInt("POLLER_CONCURRENCY", 50)),
 			Window:               getEnvAsDuration("POLLER_WINDOW", 1*time.Minute),
-			ProxyURL:             getEnv("PROXY_URL", ""),
+			ProxyURL:             getEnv("PROXY_URL", "socks5://127.0.0.1:40000"),
 			StaticErrorThreshold: int8(getEnvAsInt("POLLER_STATIC_ERROR_THRESHOLD", 10)),
 			TotalErrorThreshold:  int8(getEnvAsInt("POLLER_TOTAL_ERROR_THRESHOLD", 5)),
 		},
