@@ -8,6 +8,7 @@ import (
 
 type ErrorCounter struct {
 	Count    int    `json:"count"`
+	Reason   string `json:"reason,omitempty"`
 	LastSeen string `json:"last_seen"`
 }
 

@@ -210,7 +210,7 @@ func processRun(ctx context.Context, run db.ListRunsToPollRow, queries *db.Queri
 
 	body, err := api.FetchTrainStatus(ctx, trainNoStr, run.SourceStation, run.DestinationStation, runDate)
 	if err != nil {
-		result = handleAPIError(ctx, queries, run, logger, loc)
+		result = handleAPIError(ctx, queries, run, err, loc)
 		return result
 	}
 
@@ -227,7 +227,7 @@ func processRun(ctx context.Context, run db.ListRunsToPollRow, queries *db.Queri
 
 	var data wimt.APIResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		result = handleUnknownError(ctx, queries, run, logger, loc)
+		result = handleUnknownError(ctx, queries, run, err, loc)
 		return result
 	}
 
@@ -324,7 +324,7 @@ func handleAPIError(
 	ctx context.Context,
 	queries *db.Queries,
 	run db.ListRunsToPollRow,
-	_ *log.Logger,
+	err error,
 	loc *time.Location,
 ) CycleResult {
 	var result CycleResult
@@ -335,6 +335,7 @@ func handleAPIError(
 		run.Errors.APIError = &dbtypes.ErrorCounter{}
 	}
 	run.Errors.APIError.Count++
+	run.Errors.APIError.Reason = run.Errors.APIError.Reason + "; " + err.Error()
 	run.Errors.APIError.LastSeen = time.Now().In(loc).Format(time.RFC3339)
 
 	if err := queries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
@@ -350,7 +351,7 @@ func handleUnknownError(
 	ctx context.Context,
 	queries *db.Queries,
 	run db.ListRunsToPollRow,
-	_ *log.Logger,
+	reason error,
 	loc *time.Location,
 ) CycleResult {
 	var result CycleResult
@@ -361,6 +362,7 @@ func handleUnknownError(
 		run.Errors.UnknownError = &dbtypes.ErrorCounter{}
 	}
 	run.Errors.UnknownError.Count++
+	run.Errors.UnknownError.Reason = run.Errors.UnknownError.Reason + "; " + reason.Error()
 	run.Errors.UnknownError.LastSeen = time.Now().In(loc).Format(time.RFC3339)
 
 	if err := queries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
@@ -514,6 +516,7 @@ func processValidResponse(
 			}
 		}
 	}
+	run.Errors.StaticResponse.Count = 0
 
 	if err := txq.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
 		RunID:          run.RunID,
@@ -524,6 +527,7 @@ func processValidResponse(
 		Lng:            lng,
 		LastUpdatedSno: finalSNO,
 		LastUpdateIso:  lastUpdateIso,
+		Errors:         run.Errors,
 	}); err != nil {
 		return result
 	}
