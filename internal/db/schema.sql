@@ -89,12 +89,12 @@ CREATE TABLE
         run_date TEXT NOT NULL, -- ISO: YYYY-MM-DD (date at origin)
         has_started INTEGER NOT NULL DEFAULT 0 CHECK (has_started IN (0, 1)),
         has_arrived INTEGER NOT NULL DEFAULT 0 CHECK (has_arrived IN (0, 1)),
-        current_status TEXT, -- e.g. "Running", "Diverted", "Rescheduled"
-        last_known_lat REAL,
-        last_known_lng REAL,
-        errors TEXT DEFAULT '[]',
+        current_status TEXT DEFAULT "unknown", -- e.g. "Running", "Rescheduled"
+        last_known_lat_u6 INTEGER,
+        last_known_lng_u6 INTEGER,
+        errors TEXT DEFAULT '{}',
         last_updated_sno TEXT,
-        last_update_timestamp_ISO TEXT, -- ISO format, API example: 2025-12-10T22:04:33.019687+05:30
+        last_update_timestamp_ISO TEXT, -- ISO format, API example: 2025-12-10T22:04:33.019687+05:30, RFC3339
         created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
         updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
         FOREIGN KEY (schedule_id) REFERENCES train_schedules (schedule_id) ON DELETE CASCADE,
@@ -110,8 +110,8 @@ CREATE TABLE
     IF NOT EXISTS train_run_locations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id TEXT NOT NULL,
-        lat REAL NOT NULL,
-        lng REAL NOT NULL,
+        lat_u6 INTEGER NOT NULL,
+        lng_u6 INTEGER NOT NULL,
         distance_km REAL NOT NULL,
         segment_station_code TEXT NOT NULL,
         at_station INTEGER DEFAULT 0,

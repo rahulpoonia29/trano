@@ -6,6 +6,8 @@ package db
 
 import (
 	"database/sql"
+
+	"trano/internal/db"
 )
 
 type Station struct {
@@ -47,27 +49,27 @@ type TrainRoute struct {
 }
 
 type TrainRun struct {
-	RunID                  string          `json:"run_id"`
-	ScheduleID             int64           `json:"schedule_id"`
-	TrainNo                int64           `json:"train_no"`
-	RunDate                string          `json:"run_date"`
-	HasStarted             int64           `json:"has_started"`
-	HasArrived             int64           `json:"has_arrived"`
-	CurrentStatus          sql.NullString  `json:"current_status"`
-	LastKnownLat           sql.NullFloat64 `json:"last_known_lat"`
-	LastKnownLng           sql.NullFloat64 `json:"last_known_lng"`
-	Errors                 sql.NullString  `json:"errors"`
-	LastUpdatedSno         sql.NullString  `json:"last_updated_sno"`
-	LastUpdateTimestampIso sql.NullString  `json:"last_update_timestamp_iso"`
-	CreatedAt              string          `json:"created_at"`
-	UpdatedAt              string          `json:"updated_at"`
+	RunID                  string         `json:"run_id"`
+	ScheduleID             int64          `json:"schedule_id"`
+	TrainNo                int64          `json:"train_no"`
+	RunDate                string         `json:"run_date"`
+	HasStarted             int64          `json:"has_started"`
+	HasArrived             int64          `json:"has_arrived"`
+	CurrentStatus          interface{}    `json:"current_status"`
+	LastKnownLatU6         sql.NullInt64  `json:"last_known_lat_u6"`
+	LastKnownLngU6         sql.NullInt64  `json:"last_known_lng_u6"`
+	Errors                 db.RunErrors   `json:"errors"`
+	LastUpdatedSno         sql.NullString `json:"last_updated_sno"`
+	LastUpdateTimestampIso sql.NullString `json:"last_update_timestamp_iso"`
+	CreatedAt              string         `json:"created_at"`
+	UpdatedAt              string         `json:"updated_at"`
 }
 
 type TrainRunLocation struct {
 	ID                 int64         `json:"id"`
 	RunID              string        `json:"run_id"`
-	Lat                float64       `json:"lat"`
-	Lng                float64       `json:"lng"`
+	LatU6              int64         `json:"lat_u6"`
+	LngU6              int64         `json:"lng_u6"`
 	DistanceKm         float64       `json:"distance_km"`
 	SegmentStationCode string        `json:"segment_station_code"`
 	AtStation          sql.NullInt64 `json:"at_station"`

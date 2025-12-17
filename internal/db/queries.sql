@@ -61,19 +61,43 @@ SELECT
     tr.run_id,
     tr.train_no,
     tr.run_date,
-    tr.last_known_lat,
-    tr.last_known_lng,
+    tr.last_known_lat_u6,
+    tr.last_known_lng_u6,
+    tr.last_updated_sno,
     tr.last_update_timestamp_ISO,
-    COALESCE(tr.errors, '[]') AS errors,
+    COALESCE(tr.errors, '{}') AS errors,
+    ts.schedule_id,
     ts.origin_station_code AS source_station,
     ts.terminus_station_code AS destination_station
 FROM train_runs tr
 JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
 WHERE tr.has_arrived = 0
-  AND tr.run_date = CAST(@target_date AS TEXT)
-  AND COALESCE(json_array_length(tr.errors), 0) < CAST(@threshold AS INTEGER)
-  AND datetime(tr.run_date || ' 00:00')
-      <= datetime('now', '-' || ts.origin_sch_departure_min || ' minutes')
+    -- run_date is today or older, but not older than 5 days
+    AND date(tr.run_date) <= date(@now_ts)
+    AND date(tr.run_date) >= date(@now_ts, '-5 days')
+
+  -- static-response threshold
+  AND COALESCE(
+        json_extract(tr.errors, '$.static_response.count'),
+        0
+      ) < CAST(@static_response_threshold AS INTEGER)
+
+  -- total error threshold
+  AND (
+        COALESCE(json_extract(tr.errors, '$.static_response.count'), 0)
+      + COALESCE(json_extract(tr.errors, '$.api_error.count'), 0)
+      + COALESCE(json_extract(tr.errors, '$.unknown.count'), 0)
+      ) < CAST(@total_error_threshold AS INTEGER)
+
+  -- train has started (IST)
+  AND datetime(
+        tr.run_date || ' ' ||
+        printf(
+          '%02d:%02d',
+          ts.origin_sch_departure_min / 60,
+          ts.origin_sch_departure_min % 60
+        )
+      ) <= datetime(@now_ts)
 ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST;
 
 -- name: UpdateRunStatus :exec
@@ -83,20 +107,30 @@ SET
   has_started               = COALESCE(@has_started, has_started),
   has_arrived               = COALESCE(@has_arrived, has_arrived),
   current_status            = COALESCE(@current_status, current_status),
-  last_known_lat            = COALESCE(@lat, last_known_lat),
-  last_known_lng            = COALESCE(@lng, last_known_lng),
+  last_known_lat_u6         = COALESCE(@lat, last_known_lat_u6),
+  last_known_lng_u6         = COALESCE(@lng, last_known_lng_u6),
   errors                    = COALESCE(@errors, errors),
   last_updated_sno          = COALESCE(@last_updated_sno, last_updated_sno),
   last_update_timestamp_ISO = COALESCE(@last_update_iso, last_update_timestamp_ISO),
   updated_at                = CURRENT_TIMESTAMP
 WHERE run_id = @run_id;
 
+-- name: ClearRunningDayBitForDate :exec
+UPDATE train_schedules
+SET
+  running_days_bitmap =
+    running_days_bitmap
+    & ~(1 << CAST(strftime('%w', @run_date) AS INTEGER)),
+  updated_at = CURRENT_TIMESTAMP
+WHERE schedule_id = @schedule_id
+  AND (running_days_bitmap & (1 << CAST(strftime('%w', @run_date) AS INTEGER))) <> 0;
+
 -- name: LogRunLocation :exec
 -- Inserts into the time-series tracking table
 INSERT INTO train_run_locations (
-  run_id, lat, lng, distance_km, segment_station_code, at_station, timestamp_ISO
+  run_id, lat_u6, lng_u6, distance_km, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
-  @run_id, @lat, @lng, @distance_km, @segment_station_code, COALESCE(@at_station, 0), @timestamp_iso
+  @run_id, @lat_u6, @lng_u6, @distance_km, @segment_station_code, COALESCE(@at_station, 0), @timestamp_iso
 )
 ON CONFLICT(run_id, timestamp_ISO) DO NOTHING;
 

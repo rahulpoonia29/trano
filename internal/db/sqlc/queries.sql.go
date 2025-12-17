@@ -8,7 +8,30 @@ package db
 import (
 	"context"
 	"database/sql"
+
+	"trano/internal/db"
 )
+
+const clearRunningDayBitForDate = `-- name: ClearRunningDayBitForDate :exec
+UPDATE train_schedules
+SET
+  running_days_bitmap =
+    running_days_bitmap
+    & ~(1 << CAST(strftime('%w', @run_date) AS INTEGER)),
+  updated_at = CURRENT_TIMESTAMP
+WHERE schedule_id = ?1
+  AND (running_days_bitmap & (1 << CAST(strftime('%w', ?2) AS INTEGER))) <> 0
+`
+
+type ClearRunningDayBitForDateParams struct {
+	ScheduleID int64       `json:"schedule_id"`
+	RunDate    interface{} `json:"run_date"`
+}
+
+func (q *Queries) ClearRunningDayBitForDate(ctx context.Context, arg ClearRunningDayBitForDateParams) error {
+	_, err := q.db.ExecContext(ctx, clearRunningDayBitForDate, arg.ScheduleID, arg.RunDate)
+	return err
+}
 
 const listActiveSchedules = `-- name: ListActiveSchedules :many
 SELECT
@@ -61,42 +84,69 @@ SELECT
     tr.run_id,
     tr.train_no,
     tr.run_date,
-    tr.last_known_lat,
-    tr.last_known_lng,
+    tr.last_known_lat_u6,
+    tr.last_known_lng_u6,
+    tr.last_updated_sno,
     tr.last_update_timestamp_ISO,
-    COALESCE(tr.errors, '[]') AS errors,
+    COALESCE(tr.errors, '{}') AS errors,
+    ts.schedule_id,
     ts.origin_station_code AS source_station,
     ts.terminus_station_code AS destination_station
 FROM train_runs tr
 JOIN train_schedules ts ON tr.schedule_id = ts.schedule_id
 WHERE tr.has_arrived = 0
-  AND tr.run_date = CAST(?1 AS TEXT)
-  AND COALESCE(json_array_length(tr.errors), 0) < CAST(?2 AS INTEGER)
-  AND datetime(tr.run_date || ' 00:00')
-      <= datetime('now', '-' || ts.origin_sch_departure_min || ' minutes')
+    -- run_date is today or older, but not older than 5 days
+    AND date(tr.run_date) <= date(?1)
+    AND date(tr.run_date) >= date(?1, '-5 days')
+
+  -- static-response threshold
+  AND COALESCE(
+        json_extract(tr.errors, '$.static_response.count'),
+        0
+      ) < CAST(?2 AS INTEGER)
+
+  -- total error threshold
+  AND (
+        COALESCE(json_extract(tr.errors, '$.static_response.count'), 0)
+      + COALESCE(json_extract(tr.errors, '$.api_error.count'), 0)
+      + COALESCE(json_extract(tr.errors, '$.unknown.count'), 0)
+      ) < CAST(?3 AS INTEGER)
+
+  -- train has started (IST)
+  AND datetime(
+        tr.run_date || ' ' ||
+        printf(
+          '%02d:%02d',
+          ts.origin_sch_departure_min / 60,
+          ts.origin_sch_departure_min % 60
+        )
+      ) <= datetime(?1)
 ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST
 `
 
 type ListRunsToPollParams struct {
-	TargetDate string `json:"target_date"`
-	Threshold  int64  `json:"threshold"`
+	NowTs                   interface{} `json:"now_ts"`
+	StaticResponseThreshold int64       `json:"static_response_threshold"`
+	TotalErrorThreshold     int64       `json:"total_error_threshold"`
 }
 
 type ListRunsToPollRow struct {
-	RunID                  string          `json:"run_id"`
-	TrainNo                int64           `json:"train_no"`
-	RunDate                string          `json:"run_date"`
-	LastKnownLat           sql.NullFloat64 `json:"last_known_lat"`
-	LastKnownLng           sql.NullFloat64 `json:"last_known_lng"`
-	LastUpdateTimestampIso sql.NullString  `json:"last_update_timestamp_iso"`
-	Errors                 string          `json:"errors"`
-	SourceStation          string          `json:"source_station"`
-	DestinationStation     string          `json:"destination_station"`
+	RunID                  string         `json:"run_id"`
+	TrainNo                int64          `json:"train_no"`
+	RunDate                string         `json:"run_date"`
+	LastKnownLatU6         sql.NullInt64  `json:"last_known_lat_u6"`
+	LastKnownLngU6         sql.NullInt64  `json:"last_known_lng_u6"`
+	LastUpdatedSno         sql.NullString `json:"last_updated_sno"`
+	LastUpdateTimestampIso sql.NullString `json:"last_update_timestamp_iso"`
+	Errors                 db.RunErrors   `json:"errors"`
+	ScheduleID             int64          `json:"schedule_id"`
+	SourceStation          string         `json:"source_station"`
+	DestinationStation     string         `json:"destination_station"`
 }
 
 // Fetches active runs with error threshold check. Join to get source/dest for API params.
 func (q *Queries) ListRunsToPoll(ctx context.Context, arg ListRunsToPollParams) ([]ListRunsToPollRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRunsToPoll, arg.TargetDate, arg.Threshold)
+	rows, err := q.db.QueryContext(ctx, listRunsToPoll, arg.NowTs, arg.StaticResponseThreshold, arg.TotalErrorThreshold)
 	if err != nil {
 		return nil, err
 	}
@@ -108,10 +158,12 @@ func (q *Queries) ListRunsToPoll(ctx context.Context, arg ListRunsToPollParams) 
 			&i.RunID,
 			&i.TrainNo,
 			&i.RunDate,
-			&i.LastKnownLat,
-			&i.LastKnownLng,
+			&i.LastKnownLatU6,
+			&i.LastKnownLngU6,
+			&i.LastUpdatedSno,
 			&i.LastUpdateTimestampIso,
 			&i.Errors,
+			&i.ScheduleID,
 			&i.SourceStation,
 			&i.DestinationStation,
 		); err != nil {
@@ -130,7 +182,7 @@ func (q *Queries) ListRunsToPoll(ctx context.Context, arg ListRunsToPollParams) 
 
 const logRunLocation = `-- name: LogRunLocation :exec
 INSERT INTO train_run_locations (
-  run_id, lat, lng, distance_km, segment_station_code, at_station, timestamp_ISO
+  run_id, lat_u6, lng_u6, distance_km, segment_station_code, at_station, timestamp_ISO
 ) VALUES (
   ?1, ?2, ?3, ?4, ?5, COALESCE(?6, 0), ?7
 )
@@ -139,8 +191,8 @@ ON CONFLICT(run_id, timestamp_ISO) DO NOTHING
 
 type LogRunLocationParams struct {
 	RunID              string      `json:"run_id"`
-	Lat                float64     `json:"lat"`
-	Lng                float64     `json:"lng"`
+	LatU6              int64       `json:"lat_u6"`
+	LngU6              int64       `json:"lng_u6"`
 	DistanceKm         float64     `json:"distance_km"`
 	SegmentStationCode string      `json:"segment_station_code"`
 	AtStation          interface{} `json:"at_station"`
@@ -151,8 +203,8 @@ type LogRunLocationParams struct {
 func (q *Queries) LogRunLocation(ctx context.Context, arg LogRunLocationParams) error {
 	_, err := q.db.ExecContext(ctx, logRunLocation,
 		arg.RunID,
-		arg.Lat,
-		arg.Lng,
+		arg.LatU6,
+		arg.LngU6,
 		arg.DistanceKm,
 		arg.SegmentStationCode,
 		arg.AtStation,
@@ -167,8 +219,8 @@ SET
   has_started               = COALESCE(?1, has_started),
   has_arrived               = COALESCE(?2, has_arrived),
   current_status            = COALESCE(?3, current_status),
-  last_known_lat            = COALESCE(?4, last_known_lat),
-  last_known_lng            = COALESCE(?5, last_known_lng),
+  last_known_lat_u6         = COALESCE(?4, last_known_lat_u6),
+  last_known_lng_u6         = COALESCE(?5, last_known_lng_u6),
   errors                    = COALESCE(?6, errors),
   last_updated_sno          = COALESCE(?7, last_updated_sno),
   last_update_timestamp_ISO = COALESCE(?8, last_update_timestamp_ISO),
@@ -177,15 +229,15 @@ WHERE run_id = ?9
 `
 
 type UpdateRunStatusParams struct {
-	HasStarted     int64           `json:"has_started"`
-	HasArrived     int64           `json:"has_arrived"`
-	CurrentStatus  sql.NullString  `json:"current_status"`
-	Lat            sql.NullFloat64 `json:"lat"`
-	Lng            sql.NullFloat64 `json:"lng"`
-	Errors         sql.NullString  `json:"errors"`
-	LastUpdatedSno sql.NullString  `json:"last_updated_sno"`
-	LastUpdateIso  sql.NullString  `json:"last_update_iso"`
-	RunID          string          `json:"run_id"`
+	HasStarted     int64          `json:"has_started"`
+	HasArrived     int64          `json:"has_arrived"`
+	CurrentStatus  interface{}    `json:"current_status"`
+	Lat            sql.NullInt64  `json:"lat"`
+	Lng            sql.NullInt64  `json:"lng"`
+	Errors         db.RunErrors   `json:"errors"`
+	LastUpdatedSno sql.NullString `json:"last_updated_sno"`
+	LastUpdateIso  sql.NullString `json:"last_update_iso"`
+	RunID          string         `json:"run_id"`
 }
 
 // Updates the main run state
@@ -390,6 +442,7 @@ func (q *Queries) UpsertTrainRoute(ctx context.Context, arg UpsertTrainRoutePara
 }
 
 const upsertTrainRun = `-- name: UpsertTrainRun :exec
+
 INSERT INTO train_runs (
   run_id,
   schedule_id,
@@ -422,6 +475,29 @@ type UpsertTrainRunParams struct {
 	RunDate    string `json:"run_date"`
 }
 
+// AND t.train_type IN (
+//
+//	'Rajdhani',
+//	'Shatabdi',
+//	'Jan Shatabdi',
+//	'Duronto',
+//	'Tejas',
+//	'Vande Bharat',
+//	'SuperFast',
+//	'AC SuperFast',
+//	'AC Express',
+//	'Mail/Express',
+//	'Sampark Kranti',
+//	'Garib Rath',
+//	'Humsafar',
+//	'Antyodaya',
+//	'Amrit Bharat',
+//	'Double Decker',
+//	'Uday',
+//	'Suvidha',
+//	'Namo Bharat'
+//
+// );
 // Creates a run instance. run_id format: trainNo_YYYY-MM-DD
 func (q *Queries) UpsertTrainRun(ctx context.Context, arg UpsertTrainRunParams) error {
 	_, err := q.db.ExecContext(ctx, upsertTrainRun,

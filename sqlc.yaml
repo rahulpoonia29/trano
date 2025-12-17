@@ -10,3 +10,8 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         emit_result_struct_pointers: false
+        overrides:
+          - go_type:
+                import: "trano/internal/db"
+                type: "RunErrors"
+            column: "train_runs.errors"

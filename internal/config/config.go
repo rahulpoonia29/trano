@@ -22,10 +22,11 @@ type DatabaseConfig struct {
 }
 
 type PollerConfig struct {
-	Concurrency    int16
-	Window         time.Duration
-	ProxyURL       string
-	ErrorThreshold int16
+	Concurrency          int16
+	Window               time.Duration
+	ProxyURL             string
+	StaticErrorThreshold int8
+	TotalErrorThreshold  int8
 }
 
 type SyncerConfig struct {
@@ -42,10 +43,11 @@ func Load() *Config {
 			ConnectionMaxIdleTime: getEnvAsDuration("DB_CONN_MAX_IDLE_TIME", 1*time.Minute),
 		},
 		Poller: PollerConfig{
-			Concurrency:    int16(getEnvAsInt("POLLER_CONCURRENCY", 20)),
-			Window:         getEnvAsDuration("POLLER_WINDOW", 2*time.Minute),
-			ProxyURL:       getEnv("PROXY_URL", ""),
-			ErrorThreshold: int16(getEnvAsInt("POLLER_ERROR_THRESHOLD", 3)),
+			Concurrency:          int16(getEnvAsInt("POLLER_CONCURRENCY", 50)),
+			Window:               getEnvAsDuration("POLLER_WINDOW", 1*time.Minute),
+			ProxyURL:             getEnv("PROXY_URL", ""),
+			StaticErrorThreshold: int8(getEnvAsInt("POLLER_STATIC_ERROR_THRESHOLD", 10)),
+			TotalErrorThreshold:  int8(getEnvAsInt("POLLER_TOTAL_ERROR_THRESHOLD", 5)),
 		},
 		Syncer: SyncerConfig{
 			Concurrency: int16(getEnvAsInt("SYNCER_CONCURRENCY", 2)),

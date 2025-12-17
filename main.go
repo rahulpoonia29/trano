@@ -20,17 +20,15 @@ import (
 	"trano/internal/scheduler"
 
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/time/rate"
 )
 
 const (
-	schedulerInterval = 24 * time.Hour // Run scheduler once per day
+	schedulerInterval = 24 * time.Hour
 	syncInterval      = 7 * 24 * time.Hour
 )
 
 func main() {
-	// testFlag := flag.Bool("test", false, "Run in test mode with single URL")
-	// flag.Parse()
-
 	logger := log.New(os.Stdout, "[trano] ", log.LstdFlags|log.Lshortfile)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -58,20 +56,16 @@ func main() {
 	}
 
 	pollerCfg := poller.Config{
-		Concurrency:    cfg.Poller.Concurrency,
-		Window:         cfg.Poller.Window,
-		ProxyURL:       cfg.Poller.ProxyURL,
-		ErrorThreshold: cfg.Poller.ErrorThreshold,
+		Concurrency:          cfg.Poller.Concurrency,
+		Window:               cfg.Poller.Window,
+		ProxyURL:             cfg.Poller.ProxyURL,
+		StaticErrorThreshold: cfg.Poller.StaticErrorThreshold,
+		TotalErrorThreshold:  cfg.Poller.TotalErrorThreshold,
 	}
 
-	// urls := loadTrainURLs(*testFlag)
-	// if len(urls) == 0 {
-	// 	logger.Println("no train urls configured for sync")
-	// 	return
-	// }
+	urls := loadTrainURLs(false)
 
-	// Updated client creation to match new NewClient signature
-	// client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 15), nil)
+	client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 15), nil)
 
 	// logger.Printf("running initial sync with %d trains", len(urls))
 	// if err := client.ExecuteSyncCycle(ctx, dbConn, logger, int(cfg.Syncer.Concurrency), urls); err != nil {
@@ -83,8 +77,8 @@ func main() {
 	logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
 	scheduler.GenerateRunsForDate(ctx, queries, logger, startTime)
 
-	// logger.Println("starting sync manager")
-	// go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
+	logger.Println("starting sync manager")
+	go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
 
 	logger.Println("starting scheduler")
 	go runSchedulerTicker(ctx, queries, logger, loc)
@@ -103,15 +97,12 @@ func main() {
 }
 
 func initDatabase(dbCfg config.DatabaseConfig, logger *log.Logger) (*sql.DB, error) {
-	// Ensure data directory exists
 	dataDir := filepath.Dir(dbCfg.Path)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// WAL mode enables better concurrency and foreign_keys
 	dsn := fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=2000", dbCfg.Path)
-
 	dbConn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -121,7 +112,6 @@ func initDatabase(dbCfg config.DatabaseConfig, logger *log.Logger) (*sql.DB, err
 		dbConn.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-
 	logger.Printf("database opened: %s", dbCfg.Path)
 
 	if err := applyMigrations(dbConn, logger); err != nil {
@@ -149,7 +139,6 @@ func configureConnectionPool(dbConn *sql.DB, dbCfg config.DatabaseConfig, logger
 		dbCfg.MaxOpenConnections, dbCfg.MaxIdleConnections, dbCfg.ConnectionMaxLifetime, dbCfg.ConnectionMaxIdleTime)
 }
 
-// applyMigrations reads and executes the schema.sql file
 func applyMigrations(dbConn *sql.DB, logger *log.Logger) error {
 	schemaPath := "./internal/db/schema.sql"
 	schema, err := os.ReadFile(schemaPath)
