@@ -38,6 +38,18 @@ type LastStationSnapshot struct {
 	ActDepMin   int
 }
 
+type CycleResult struct {
+	RunID          string
+	Success        bool
+	ShortResponse  string
+	StaticResponse bool
+	APIError       bool
+	UnknownError   bool
+	NoCoords       bool
+	CoordsLogged   bool
+	BecameArrived  bool
+}
+
 // Start blocks until ctx is cancelled
 // Calls executeCycle repeatedly and ensures each cycle lasts at least cfg.Window
 func Start(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, logger *log.Logger, cfg Config, loc *time.Location) {
@@ -86,7 +98,6 @@ func Start(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, logger *log.
 }
 
 func executeCycle(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, api *wimt.APIClient, logger *log.Logger, cfg Config, loc *time.Location) int {
-	// fetch runs to poll using local time
 	runs, err := queries.ListRunsToPoll(ctx, db.ListRunsToPollParams{
 		NowTs:                   time.Now().In(loc).Format(time.DateTime),
 		StaticResponseThreshold: int64(cfg.StaticErrorThreshold),
@@ -105,12 +116,13 @@ func executeCycle(ctx context.Context, queries *db.Queries, sqlDB *sql.DB, api *
 	delay = delay.Round(time.Millisecond)
 	logger.Printf("cycle start | targets: %d | rate_delay: %v", len(runs), delay)
 
+	resultsCh := make(chan CycleResult, len(runs))
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, cfg.Concurrency)
 	ticker := time.NewTicker(delay)
 	defer ticker.Stop()
 
-	processed := 0
 loop:
 	for _, run := range runs {
 		select {
@@ -123,23 +135,73 @@ loop:
 			go func(r db.ListRunsToPollRow) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if err := processRun(ctx, r, queries, sqlDB, api, logger, loc); err != nil {
-					logger.Printf("processRun error for %s: %v", r.RunID, err)
-				}
+				result := processRun(ctx, r, queries, sqlDB, api, logger, loc)
+				resultsCh <- result
 			}(run)
-
-			processed++
 		}
 	}
 
 	wg.Wait()
-	return processed
+	close(resultsCh)
+
+	agg := struct {
+		Processed       int
+		Success         int
+		ShortNotRunning int
+		ShortTimetable  int
+		ShortUnknown    int
+		StaticResponse  int
+		APIError        int
+		UnknownError    int
+		NoCoords        int
+		CoordsLogged    int
+		BecameArrived   int
+		HasStarted      int
+	}{}
+
+	for result := range resultsCh {
+		agg.Processed++
+		if result.Success {
+			agg.Success++
+			if result.CoordsLogged {
+				agg.CoordsLogged++
+			} else {
+				agg.NoCoords++
+			}
+			if result.BecameArrived {
+				agg.BecameArrived++
+			}
+		}
+		switch result.ShortResponse {
+		case "not_running_today":
+			agg.ShortNotRunning++
+		case "timetable_update":
+			agg.ShortTimetable++
+		case "unknown_short_response":
+			agg.ShortUnknown++
+		}
+		if result.StaticResponse {
+			agg.StaticResponse++
+		}
+		if result.APIError {
+			agg.APIError++
+		}
+		if result.UnknownError {
+			agg.UnknownError++
+		}
+	}
+
+	logger.Printf("cycle results | processed: %d | success: %d | short_resp: %d/%d/%d (not_run/timetable/unknown) | static_resp: %d | api_err: %d | unknown_err: %d | no_coords: %d | coords_logged: %d | became_arrived: %d | has_started: %d", agg.Processed, agg.Success, agg.ShortNotRunning, agg.ShortTimetable, agg.ShortUnknown, agg.StaticResponse, agg.APIError, agg.UnknownError, agg.NoCoords, agg.CoordsLogged, agg.BecameArrived, agg.HasStarted)
+	return agg.Processed
 }
 
-func processRun(ctx context.Context, run db.ListRunsToPollRow, queries *db.Queries, sqlDB *sql.DB, api *wimt.APIClient, logger *log.Logger, loc *time.Location) error {
+func processRun(ctx context.Context, run db.ListRunsToPollRow, queries *db.Queries, sqlDB *sql.DB, api *wimt.APIClient, logger *log.Logger, loc *time.Location) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
+
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return result
 	default:
 	}
 
@@ -148,30 +210,29 @@ func processRun(ctx context.Context, run db.ListRunsToPollRow, queries *db.Queri
 
 	body, err := api.FetchTrainStatus(ctx, trainNoStr, run.SourceStation, run.DestinationStation, runDate)
 	if err != nil {
-		if herr := handleAPIError(ctx, queries, run, logger, loc); herr != nil {
-			logger.Printf("failed to handle API error for %s: %v", run.RunID, herr)
-		}
-		return fmt.Errorf("API fetch failed: %w", err)
+		result = handleAPIError(ctx, queries, run, logger, loc)
+		return result
 	}
 
 	bodyStr := string(body)
 	if len(body) < 150 {
-		return handleShortResponse(ctx, queries, sqlDB, run, bodyStr, logger)
+		result = handleShortResponse(ctx, queries, sqlDB, run, bodyStr, logger)
+		return result
 	}
 
 	if !strings.Contains(bodyStr, "running_status") && !strings.Contains(bodyStr, "running status") {
-		return handleStaticResponse(ctx, queries, run, logger, loc)
+		result = handleStaticResponse(ctx, queries, run, logger, loc)
+		return result
 	}
 
 	var data wimt.APIResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		if herr := handleUnknownError(ctx, queries, run, logger, loc); herr != nil {
-			logger.Printf("failed to handle unknown error for %s: %v", run.RunID, herr)
-		}
-		return fmt.Errorf("unmarshal failed: %w", err)
+		result = handleUnknownError(ctx, queries, run, logger, loc)
+		return result
 	}
 
-	return processValidResponse(ctx, queries, sqlDB, run, &data, logger, loc)
+	result = processValidResponse(ctx, queries, sqlDB, run, &data, logger, loc)
+	return result
 }
 
 const (
@@ -187,23 +248,24 @@ func handleShortResponse(
 	run db.ListRunsToPollRow,
 	bodyStr string,
 	logger *log.Logger,
-) error {
-	var status string
+) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
 
 	switch {
 	case strings.Contains(bodyStr, "not running"):
-		status = statusNotRunning
+		result.ShortResponse = statusNotRunning
 	case strings.Contains(bodyStr, "update the timetable"):
-		status = statusTimetable
+		result.ShortResponse = statusTimetable
 	default:
-		status = statusUnknown
+		result.ShortResponse = statusUnknown
 		logger.Printf("unexpected short response for %s: %s", run.RunID, bodyStr)
 	}
 
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		logger.Printf("failed to begin tx for short-response update for %s: %v", run.RunID, err)
-		return fmt.Errorf("begin tx: %w", err)
+		return result
 	}
 	defer tx.Rollback()
 
@@ -212,13 +274,13 @@ func handleShortResponse(
 	if err := txQueries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
 		RunID:         run.RunID,
 		HasArrived:    1,
-		CurrentStatus: sql.NullString{String: status, Valid: true},
+		CurrentStatus: sql.NullString{String: result.ShortResponse, Valid: true},
 	}); err != nil {
-		return fmt.Errorf("failed to update run status for %s: %w", run.RunID, err)
+		return result
 	}
 
 	// update bitmap
-	if status == statusNotRunning {
+	if result.ShortResponse == statusNotRunning {
 		if err := txQueries.ClearRunningDayBitForDate(ctx, db.ClearRunningDayBitForDateParams{
 			ScheduleID: run.ScheduleID,
 			RunDate:    run.RunDate,
@@ -228,10 +290,10 @@ func handleShortResponse(
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+		return result
 	}
 
-	return nil
+	return result
 }
 
 func handleStaticResponse(
@@ -240,7 +302,11 @@ func handleStaticResponse(
 	run db.ListRunsToPollRow,
 	_ *log.Logger,
 	loc *time.Location,
-) error {
+) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
+	result.StaticResponse = true
+
 	run.Errors.StaticResponse.Count++
 	run.Errors.StaticResponse.LastSeen = time.Now().In(loc).Format(time.RFC3339)
 
@@ -248,10 +314,10 @@ func handleStaticResponse(
 		RunID:  run.RunID,
 		Errors: run.Errors,
 	}); err != nil {
-		return fmt.Errorf("failed to update run status for static response: %w", err)
+		return result
 	}
 
-	return nil
+	return result
 }
 
 func handleAPIError(
@@ -260,7 +326,11 @@ func handleAPIError(
 	run db.ListRunsToPollRow,
 	_ *log.Logger,
 	loc *time.Location,
-) error {
+) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
+	result.APIError = true
+
 	if run.Errors.APIError == nil {
 		run.Errors.APIError = &dbtypes.ErrorCounter{}
 	}
@@ -271,9 +341,9 @@ func handleAPIError(
 		RunID:  run.RunID,
 		Errors: run.Errors,
 	}); err != nil {
-		return fmt.Errorf("failed to update run status for API error: %w", err)
+		return result
 	}
-	return nil
+	return result
 }
 
 func handleUnknownError(
@@ -282,7 +352,11 @@ func handleUnknownError(
 	run db.ListRunsToPollRow,
 	_ *log.Logger,
 	loc *time.Location,
-) error {
+) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
+	result.UnknownError = true
+
 	if run.Errors.UnknownError == nil {
 		run.Errors.UnknownError = &dbtypes.ErrorCounter{}
 	}
@@ -293,9 +367,9 @@ func handleUnknownError(
 		RunID:  run.RunID,
 		Errors: run.Errors,
 	}); err != nil {
-		return fmt.Errorf("failed to update run status for unknown error: %w", err)
+		return result
 	}
-	return nil
+	return result
 }
 
 func processValidResponse(
@@ -306,7 +380,11 @@ func processValidResponse(
 	data *wimt.APIResponse,
 	logger *log.Logger,
 	loc *time.Location,
-) error {
+) CycleResult {
+	var result CycleResult
+	result.RunID = run.RunID
+	result.Success = true
+
 	type RunStatus struct {
 		Canonical  string
 		IsTerminal bool
@@ -345,7 +423,7 @@ func processValidResponse(
 
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return result
 	}
 	defer tx.Rollback()
 
@@ -442,14 +520,24 @@ func processValidResponse(
 		LastUpdatedSno: finalSNO,
 		LastUpdateIso:  lastUpdateIso,
 	}); err != nil {
-		return err
+		return result
 	}
 
 	if err := tx.Commit(); err != nil {
-		return err
+		return result
 	}
-	logger.Printf("run %s processed successfully", run.RunID)
-	return nil
+	// logger.Printf("run %s processed successfully", run.RunID)
+
+	if hasArrived == 1 {
+		result.BecameArrived = true
+	}
+	if lat.Valid {
+		result.CoordsLogged = true
+	} else {
+		result.NoCoords = true
+	}
+
+	return result
 }
 
 func SnoStrFromDaySchedule(currStn *wimt.DaySchedule, loc *time.Location) (string, error) {
@@ -468,8 +556,9 @@ func SnoStrFromDaySchedule(currStn *wimt.DaySchedule, loc *time.Location) (strin
 		stationCode == "" ||
 		schArrMin < 0 ||
 		actArrMin < 0 ||
-		schDepMin < 0 ||
-		actDepMin < 0 {
+		schDepMin < 0 {
+		// actDepMin < 0
+
 		return "", fmt.Errorf("invalid field(s): sno=%d, stationCode=%q, schArrMin=%d, actArrMin=%d, schDepMin=%d, actDepMin=%d",
 			sno, stationCode, schArrMin, actArrMin, schDepMin, actDepMin)
 	}
