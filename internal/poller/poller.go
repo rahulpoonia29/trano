@@ -32,10 +32,10 @@ type ErrorEntry struct {
 type LastStationSnapshot struct {
 	Sno         int
 	StationCode string
-	SchArrMin   int
-	ActArrMin   int
-	SchDepMin   int
-	ActDepMin   int
+	SchArrTm    int64
+	ActArrTm    int64
+	SchDepTm    int64
+	ActDepTm    int64
 }
 
 type CycleResult struct {
@@ -451,7 +451,7 @@ func processValidResponse(
 	switch {
 	case currStn == nil || currStn.Sno < 0 || currStn.StationCode == "":
 	default:
-		incomingSNO, err := SnoStrFromDaySchedule(run.RunDate, currStn, loc)
+		incomingSNO, err := SnoStrFromDaySchedule(currStn)
 		if err != nil {
 			logger.Printf("failed to get SNO for run %s: %v", run.RunID, err)
 			break
@@ -545,58 +545,37 @@ func processValidResponse(
 	return result
 }
 
-func SnoStrFromDaySchedule(runDate string, currStn *wimt.DaySchedule, loc *time.Location) (string, error) {
-	// runDate is in time.DateOnly format (YYYY-MM-DD)
+func SnoStrFromDaySchedule(currStn *wimt.DaySchedule) (string, error) {
 	if currStn == nil {
 		return "", fmt.Errorf("current station is nil")
 	}
 	sno := currStn.Sno
 	stationCode := currStn.StationCode
 
-	// Parse runDate as the reference day in the given location
-	startDay, err := time.ParseInLocation("2006-01-02", runDate, loc)
-	if err != nil {
-		return "", fmt.Errorf("invalid runDate: %v", err)
-	}
+	schArrTm := currStn.SchArrivalTm
+	actArrTm := currStn.ActualArrivalTm
+	schDepTm := currStn.SchDepartureTm
+	actDepTm := currStn.ActualDepartureTm
 
-	schArrMin := epochToMinFromStartDay(currStn.SchArrivalTm, startDay)
-	actArrMin := epochToMinFromStartDay(currStn.ActualArrivalTm, startDay)
-	schDepMin := epochToMinFromStartDay(currStn.SchDepartureTm, startDay)
-	actDepMin := epochToMinFromStartDay(currStn.ActualDepartureTm, startDay)
-
-	// If any field fails (is -1 or empty), return all -1s
+	// If any field fails, return error
 	if sno < 0 ||
 		stationCode == "" ||
-		schArrMin < 0 ||
-		actArrMin < 0 ||
-		schDepMin < 0 ||
-		actDepMin < 0 {
+		schArrTm <= 0 ||
+		actArrTm < 0 ||
+		schDepTm <= 0 ||
+		actDepTm < 0 {
 
-		return "", fmt.Errorf("invalid field(s): sno=%d, stationCode=%q, schArrMin=%d, actArrMin=%d, schDepMin=%d, actDepMin=%d",
-			sno, stationCode, currStn.SchArrivalTm, currStn.ActualArrivalTm, currStn.SchDepartureTm, currStn.ActualDepartureTm)
+		return "", fmt.Errorf("invalid field(s): sno=%d, stationCode=%q, schArrTm=%d, actArrTm=%d, schDepTm=%d, actDepTm=%d",
+			sno, stationCode, schArrTm, actArrTm, schDepTm, actDepTm)
 	}
 
 	return fmt.Sprintf(
 		"%d|%s|%d|%d|%d|%d",
 		sno,
 		stationCode,
-		schArrMin,
-		actArrMin,
-		schDepMin,
-		actDepMin,
+		schArrTm,
+		actArrTm,
+		schDepTm,
+		actDepTm,
 	), nil
-}
-
-// Returns minutes since startDay's midnight in loc, or -1 if epoch is not valid
-func epochToMinFromStartDay(epoch int64, startDay time.Time) int {
-	if epoch <= 0 {
-		return -1
-	}
-	t := time.Unix(epoch, 0).In(startDay.Location())
-	// Calculate minutes since midnight of startDay in loc
-	minutes := int(t.Sub(startDay).Minutes())
-	if minutes < 0 {
-		return -1
-	}
-	return minutes
 }
