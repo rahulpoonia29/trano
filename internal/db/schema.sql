@@ -81,6 +81,40 @@ CREATE TABLE
 
 CREATE INDEX IF NOT EXISTS idx_train_routes_station ON train_routes (station_code);
 
+-- (SpatiaLite)
+
+-- One LINESTRING per schedule, used for snapping and linear referencing
+CREATE TABLE
+    IF NOT EXISTS train_route_geometries (
+        schedule_id INTEGER PRIMARY KEY,
+        train_no INTEGER NOT NULL,
+        FOREIGN KEY (schedule_id) REFERENCES train_schedules (schedule_id) ON DELETE CASCADE
+    );
+
+SELECT
+    CASE
+        WHEN NOT EXISTS (
+            SELECT
+                1
+            FROM
+                pragma_table_info ('train_route_geometries')
+            WHERE
+                name = 'route_geom'
+        ) THEN AddGeometryColumn (
+            'train_route_geometries',
+            'route_geom',
+            4326,
+            'LINESTRING',
+            'XY'
+        )
+    END;
+
+SELECT
+    CreateSpatialIndex ('train_route_geometries', 'route_geom');
+
+CREATE INDEX IF NOT EXISTS idx_train_route_geometries_train_no ON train_route_geometries (train_no);
+
+-- TRAIN RUN (one physical run on a specific date)
 CREATE TABLE
     IF NOT EXISTS train_runs (
         run_id TEXT PRIMARY KEY, -- e.g. "12817_2025-05-10"
@@ -90,32 +124,47 @@ CREATE TABLE
         has_started INTEGER NOT NULL DEFAULT 0 CHECK (has_started IN (0, 1)),
         has_arrived INTEGER NOT NULL DEFAULT 0 CHECK (has_arrived IN (0, 1)),
         current_status TEXT DEFAULT "unknown", -- e.g. "Running", "Rescheduled"
+
         last_known_lat_u6 INTEGER,
         last_known_lng_u6 INTEGER,
-        errors TEXT DEFAULT '{}',
+
+        last_known_snapped_lat_u6 INTEGER,
+        last_known_snapped_lng_u6 INTEGER,
+        last_route_frac_u4 INTEGER,
+
+        last_known_distance_km_u4 INTEGER,
         last_updated_sno TEXT,
-        last_update_timestamp_ISO TEXT, -- ISO format, API example: 2025-12-10T22:04:33.019687+05:30, RFC3339
-        created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
-        updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL, -- ISO: YYYY-MM-DD HH:MM:SS
+
+        errors TEXT DEFAULT '{}',
+        last_update_timestamp_ISO TEXT,
+        created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
+        updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
         FOREIGN KEY (schedule_id) REFERENCES train_schedules (schedule_id) ON DELETE CASCADE,
         FOREIGN KEY (train_no) REFERENCES trains (train_no) ON DELETE CASCADE,
         UNIQUE (train_no, run_date)
     );
 
 CREATE INDEX IF NOT EXISTS idx_train_runs_schedule_date ON train_runs (schedule_id, run_date);
+
 CREATE INDEX IF NOT EXISTS idx_train_runs_poll ON train_runs (has_arrived, run_date, last_update_timestamp_ISO);
 
--- TRAIN RUN LOCATIONS (time-series tracking per run)
+-- TIME SERIES LOCATION LOG
 CREATE TABLE
     IF NOT EXISTS train_run_locations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id TEXT NOT NULL,
+
         lat_u6 INTEGER NOT NULL,
         lng_u6 INTEGER NOT NULL,
+        snapped_lat_u6 INTEGER,
+        snapped_lng_u6 INTEGER,
+
+        route_frac_u4 INTEGER,
         distance_km_u4 INTEGER NOT NULL,
         segment_station_code TEXT NOT NULL,
-        at_station INTEGER DEFAULT 0,
-        timestamp_ISO TEXT NOT NULL, -- ISO timestamp
+        at_station INTEGER NOT NULL DEFAULT 0,
+
+        timestamp_ISO TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES train_runs (run_id) ON DELETE CASCADE,
         UNIQUE (run_id, timestamp_ISO)
     );

@@ -423,17 +423,10 @@ func processValidResponse(
 		}
 	}
 
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return result
-	}
-	defer tx.Rollback()
-
-	txq := queries.WithTx(tx)
-
-	hasArrived := int64(0)
-	if status.IsTerminal {
-		hasArrived = 1
+	var finalSNO sql.NullString
+	finalSNO.Valid = false
+	updateFinalSNO := func(incoming string) {
+		finalSNO = sql.NullString{String: incoming, Valid: true}
 	}
 
 	var currStn *wimt.DaySchedule
@@ -444,35 +437,48 @@ func processValidResponse(
 		}
 	}
 
-	finalSNO := sql.NullString{Valid: false}
-
-	updateFinalSNO := func(incoming string) {
-		finalSNO = sql.NullString{String: incoming, Valid: true}
-	}
-
 	switch {
 	case currStn == nil || currStn.Sno < 0 || currStn.StationCode == "":
+		// leave finalSNO invalid
 	default:
 		incomingSNO, err := SnoStrFromDaySchedule(currStn)
 		if err != nil {
 			logger.Printf("failed to get SNO for run %s: %v", run.RunID, err)
-			break
+		} else {
+			if !run.LastUpdatedSno.Valid || run.LastUpdatedSno.String == "" {
+				updateFinalSNO(incomingSNO)
+			} else {
+				existingParts := strings.Split(run.LastUpdatedSno.String, "|")
+				if len(existingParts) == 0 {
+					updateFinalSNO(incomingSNO)
+				} else {
+					if existingSno, err := strconv.Atoi(existingParts[0]); err == nil && currStn.Sno > existingSno {
+						updateFinalSNO(incomingSNO)
+					}
+				}
+			}
 		}
+	}
 
-		if !run.LastUpdatedSno.Valid || run.LastUpdatedSno.String == "" {
-			updateFinalSNO(incomingSNO)
-			break
-		}
+	run.Errors.StaticResponse.Count = 0
 
-		existingParts := strings.Split(run.LastUpdatedSno.String, "|")
-		if len(existingParts) == 0 {
-			updateFinalSNO(incomingSNO)
-			break
-		}
+	hasArrived := int64(0)
+	if status.IsTerminal {
+		hasArrived = 1
+	}
 
-		if existingSno, err := strconv.Atoi(existingParts[0]); err == nil && currStn.Sno > existingSno {
-			updateFinalSNO(incomingSNO)
-		}
+	// status-only update
+	if err := queries.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
+		RunID:          run.RunID,
+		HasStarted:     1,
+		HasArrived:     hasArrived,
+		CurrentStatus:  status.Canonical,
+		LastUpdatedSno: finalSNO,
+		LastUpdateIso:  lastUpdateIso,
+		Errors:         run.Errors,
+	}); err != nil {
+		logger.Printf("status update (tx1) failed for %s: %v", run.RunID, err)
+		return result
 	}
 
 	// Determine if the incoming API time is newer than the DB's last update timestamp
@@ -483,67 +489,135 @@ func processValidResponse(
 		} else {
 			dbTime, err := time.Parse(time.RFC3339, run.LastUpdateTimestampIso.String)
 			if err != nil {
-				locationAllowed = true // trust API if DB is corrupt
+				// If DB time is corrupt, prefer API time
+				locationAllowed = true
 			} else {
 				locationAllowed = apiTime.In(loc).After(dbTime.In(loc))
 			}
 		}
 	}
 
-	var lat, lng sql.NullInt64
-	if locationAllowed {
-		// Try to extract a valid location from the API response
-		if data.Lat != nil && data.Lng != nil {
-			latVal, lngVal := *data.Lat, *data.Lng
-			if !(latVal == 0 && lngVal == 0) && latVal >= 6.0 && latVal <= 37.0 && lngVal >= 68.0 && lngVal <= 97.0 {
-				// Convert to U6 precision (multiply by 1,000,000)
-				latInt := int64(latVal * 1e6)
-				lngInt := int64(lngVal * 1e6)
-				distanceInt := int64(data.Distance * 1e4)
-
-				lat = sql.NullInt64{Int64: latInt, Valid: true}
-				lng = sql.NullInt64{Int64: lngInt, Valid: true}
-
-				_ = txq.LogRunLocation(ctx, db.LogRunLocationParams{
-					RunID:              run.RunID,
-					LatU6:              latInt,
-					LngU6:              lngInt,
-					DistanceKmU4:       distanceInt,
-					SegmentStationCode: currStn.StationCode,
-					AtStation:          !data.DepartedCurStn,
-					TimestampIso:       lastUpdateIso.String,
-				})
-			}
+	// Validate lat/lng existence and India bounds
+	coordsValid := false
+	var latVal, lngVal float64
+	if locationAllowed && data.Lat != nil && data.Lng != nil {
+		latVal, lngVal = *data.Lat, *data.Lng
+		if !(latVal == 0 && lngVal == 0) && latVal >= 6.0 && latVal <= 37.0 && lngVal >= 68.0 && lngVal <= 97.0 {
+			coordsValid = true
 		}
 	}
-	run.Errors.StaticResponse.Count = 0
 
-	if err := txq.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
-		RunID:          run.RunID,
-		HasStarted:     1,
-		HasArrived:     hasArrived,
-		CurrentStatus:  sql.NullString{String: status.Canonical, Valid: true},
-		Lat:            lat,
-		Lng:            lng,
-		LastUpdatedSno: finalSNO,
-		LastUpdateIso:  lastUpdateIso,
-		Errors:         run.Errors,
-	}); err != nil {
+	if !coordsValid {
+		// Nothing to do with locations
+		result.NoCoords = true
+		if hasArrived == 1 {
+			result.BecameArrived = true
+		}
 		return result
+	}
+
+	// At this point, we have coords and locationAllowed == true
+
+	// Convert to integer micro-degrees/u4 units
+	latU6 := int64(latVal * 1e6)
+	lngU6 := int64(lngVal * 1e6)
+	distU4 := int64(data.Distance * 1e4)
+
+	// Ensure a non-nil segment station code for insertion (train_run_locations.segment_station_code NOT NULL)
+	segStn := ""
+	if currStn != nil {
+		segStn = currStn.StationCode
+	}
+
+	// Attempt snapping
+	var snappedLat sql.NullInt64
+	var snappedLng sql.NullInt64
+	var routeFrac sql.NullInt64
+	snappedLat.Valid = false
+	snappedLng.Valid = false
+	routeFrac.Valid = false
+
+	snap, err := queries.GetRunSnap(ctx, db.GetRunSnapParams{
+		RunID: run.RunID,
+		Lat:   latVal,
+		Lng:   lngVal,
+	})
+	switch err {
+	case nil:
+		// returns integers already, wrap into sql.NullInt64
+		snappedLat = sql.NullInt64{Int64: snap.SnappedLatU6, Valid: true}
+		snappedLng = sql.NullInt64{Int64: snap.SnappedLngU6, Valid: true}
+		routeFrac = sql.NullInt64{Int64: snap.RouteFracU4, Valid: true}
+	case sql.ErrNoRows:
+		// snapping not available for this run, no geometry or whatever
+		// logger.Printf("no snapping geometry for %s", run.RunID) // optional
+	default:
+		// log and continue (we still want to log raw coords)
+		logger.Printf("snapping error for %s: %v", run.RunID, err)
+	}
+
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		logger.Printf("begin tx2 failed for %s: %v", run.RunID, err)
+		return result
+	}
+	defer tx.Rollback()
+
+	txq := queries.WithTx(tx)
+
+	var atStationInt int64
+	if !data.DepartedCurStn {
+		atStationInt = 1
+	} else {
+		atStationInt = 0
+	}
+
+	// Insert into time-series table (snapped fields may be null)
+	if err := txq.LogRunLocation(ctx, db.LogRunLocationParams{
+		RunID:              run.RunID,
+		LatU6:              latU6,
+		LngU6:              lngU6,
+		SnappedLatU6:       snappedLat,
+		SnappedLngU6:       snappedLng,
+		RouteFracU4:        routeFrac,
+		DistanceKmU4:       distU4,
+		SegmentStationCode: segStn,
+		AtStation:          atStationInt,
+		TimestampIso:       lastUpdateIso.String,
+	}); err != nil {
+		logger.Printf("failed to log location for %s: %v", run.RunID, err)
+		return result
+	}
+	result.CoordsLogged = true
+
+	shouldUpdateRunLocation := snappedLat.Valid && snappedLng.Valid
+
+	if shouldUpdateRunLocation {
+		latNull := sql.NullInt64{Int64: latU6, Valid: true}
+		lngNull := sql.NullInt64{Int64: lngU6, Valid: true}
+
+		if err := txq.UpdateRunStatus(ctx, db.UpdateRunStatusParams{
+			RunID:         run.RunID,
+			LatU6:         latNull,
+			LngU6:         lngNull,
+			SnappedLatU6:  snappedLat,
+			SnappedLngU6:  snappedLng,
+			RouteFracU4:   routeFrac,
+			DistanceKmU4:  sql.NullInt64{Int64: distU4, Valid: true},
+			LastUpdateIso: lastUpdateIso,
+		}); err != nil {
+			logger.Printf("failed to update run location for %s: %v", run.RunID, err)
+			return result
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
+		logger.Printf("commit tx2 failed for %s: %v", run.RunID, err)
 		return result
 	}
-	// logger.Printf("run %s processed successfully", run.RunID)
 
 	if hasArrived == 1 {
 		result.BecameArrived = true
-	}
-	if lat.Valid {
-		result.CoordsLogged = true
-	} else {
-		result.NoCoords = true
 	}
 
 	return result

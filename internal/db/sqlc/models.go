@@ -48,6 +48,11 @@ type TrainRoute struct {
 	Stops                    int64   `json:"stops"`
 }
 
+type TrainRouteGeometry struct {
+	ScheduleID int64 `json:"schedule_id"`
+	TrainNo    int64 `json:"train_no"`
+}
+
 type TrainRun struct {
 	RunID                  string         `json:"run_id"`
 	ScheduleID             int64          `json:"schedule_id"`
@@ -58,8 +63,12 @@ type TrainRun struct {
 	CurrentStatus          interface{}    `json:"current_status"`
 	LastKnownLatU6         sql.NullInt64  `json:"last_known_lat_u6"`
 	LastKnownLngU6         sql.NullInt64  `json:"last_known_lng_u6"`
-	Errors                 db.RunErrors   `json:"errors"`
+	LastKnownSnappedLatU6  sql.NullInt64  `json:"last_known_snapped_lat_u6"`
+	LastKnownSnappedLngU6  sql.NullInt64  `json:"last_known_snapped_lng_u6"`
+	LastRouteFracU4        sql.NullInt64  `json:"last_route_frac_u4"`
+	LastKnownDistanceKmU4  sql.NullInt64  `json:"last_known_distance_km_u4"`
 	LastUpdatedSno         sql.NullString `json:"last_updated_sno"`
+	Errors                 db.RunErrors   `json:"errors"`
 	LastUpdateTimestampIso sql.NullString `json:"last_update_timestamp_iso"`
 	CreatedAt              string         `json:"created_at"`
 	UpdatedAt              string         `json:"updated_at"`
@@ -70,9 +79,12 @@ type TrainRunLocation struct {
 	RunID              string        `json:"run_id"`
 	LatU6              int64         `json:"lat_u6"`
 	LngU6              int64         `json:"lng_u6"`
+	SnappedLatU6       sql.NullInt64 `json:"snapped_lat_u6"`
+	SnappedLngU6       sql.NullInt64 `json:"snapped_lng_u6"`
+	RouteFracU4        sql.NullInt64 `json:"route_frac_u4"`
 	DistanceKmU4       int64         `json:"distance_km_u4"`
 	SegmentStationCode string        `json:"segment_station_code"`
-	AtStation          sql.NullInt64 `json:"at_station"`
+	AtStation          int64         `json:"at_station"`
 	TimestampIso       string        `json:"timestamp_iso"`
 }
 
