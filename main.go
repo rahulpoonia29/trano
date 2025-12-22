@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"trano/internal/api"
 	"trano/internal/config"
 	db "trano/internal/db/sqlc"
 	"trano/internal/iri"
@@ -83,15 +84,33 @@ func main() {
 	logger.Println("starting scheduler")
 	go runSchedulerTicker(ctx, queries, logger, loc)
 
+	logger.Println("starting api server")
+	apiSrv := api.NewServer(cfg.Server, queries, dbConn, logger)
+	go func() {
+		if err := apiSrv.Start(); err != nil {
+			logger.Fatalf("api server failed: %v", err)
+		}
+	}()
+
 	logger.Println("starting poller")
 	go poller.Start(ctx, queries, dbConn, logger, pollerCfg, loc)
 
 	<-ctx.Done()
 	logger.Println("shutdown signal received, cleaning up...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer shutdownCancel()
 
+	// gracefully stop the API server if it's running
+	if apiSrv != nil {
+		if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("error shutting down api server: %v", err)
+		} else {
+			logger.Println("api server shut down")
+		}
+	}
+
+	// wait for remaining background work or timeout
 	<-shutdownCtx.Done()
 	logger.Println("application stopped")
 }
@@ -106,6 +125,19 @@ func initDatabase(dbCfg config.DatabaseConfig, logger *log.Logger) (*sql.DB, err
 	dbConn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Load SpatiaLite extension
+	_, err = dbConn.Exec("SELECT load_extension('mod_spatialite')")
+	if err != nil {
+		logger.Printf("failed to load spatialite: %v. Ensure libsqlite3-mod-spatialite is installed.", err)
+		return nil, err
+	}
+
+	// Initialize Spatial Metadata if not exists
+	_, err = dbConn.Exec("SELECT InitSpatialMetaData(1);")
+	if err != nil {
+		logger.Printf("InitSpatialMetaData failed: %v", err)
 	}
 
 	if err := dbConn.Ping(); err != nil {
