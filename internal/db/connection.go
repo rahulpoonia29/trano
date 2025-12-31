@@ -14,7 +14,7 @@ import (
 
 const (
 	driverName = "sqlite3_spatialite"
-	schemaPath = "./schema.sql"
+	schemaPath = "./internal/db/schema.sql"
 )
 
 type DatabaseOptions struct {

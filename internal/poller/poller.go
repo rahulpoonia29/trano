@@ -533,9 +533,11 @@ func processValidResponse(
 	var snappedLat sql.NullInt64
 	var snappedLng sql.NullInt64
 	var routeFrac sql.NullInt64
+	var bearing_deg sql.NullInt64
 	snappedLat.Valid = false
 	snappedLng.Valid = false
 	routeFrac.Valid = false
+	bearing_deg.Valid = false
 
 	snap, err := queries.GetRunSnap(ctx, db.GetRunSnapParams{
 		RunID: run.RunID,
@@ -548,6 +550,7 @@ func processValidResponse(
 		snappedLat = sql.NullInt64{Int64: snap.SnappedLatU6, Valid: true}
 		snappedLng = sql.NullInt64{Int64: snap.SnappedLngU6, Valid: true}
 		routeFrac = sql.NullInt64{Int64: snap.RouteFracU4, Valid: true}
+		bearing_deg = sql.NullInt64{Int64: snap.BearingDeg, Valid: true}
 	case sql.ErrNoRows:
 		// snapping not available for this run, no geometry or whatever
 		// logger.Printf("no snapping geometry for %s", run.RunID) // optional
@@ -583,7 +586,6 @@ func processValidResponse(
 		SegmentStationCode: segStn,
 		AtStation:          atStationInt,
 		TimestampIso:       lastUpdateIso.String,
-		// RouteFracU4:        routeFrac,
 	}); err != nil {
 		logger.Printf("failed to log location for %s: %v", run.RunID, err)
 		return result
@@ -603,6 +605,7 @@ func processValidResponse(
 			SnappedLatU6:  snappedLat,
 			SnappedLngU6:  snappedLng,
 			RouteFracU4:   routeFrac,
+			BearingDeg:    bearing_deg,
 			DistanceKmU4:  sql.NullInt64{Int64: distU4, Valid: true},
 			LastUpdateIso: lastUpdateIso,
 		}); err != nil {

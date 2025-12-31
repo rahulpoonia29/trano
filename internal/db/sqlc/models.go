@@ -66,6 +66,7 @@ type TrainRun struct {
 	LastKnownSnappedLatU6  sql.NullInt64  `json:"last_known_snapped_lat_u6"`
 	LastKnownSnappedLngU6  sql.NullInt64  `json:"last_known_snapped_lng_u6"`
 	LastRouteFracU4        sql.NullInt64  `json:"last_route_frac_u4"`
+	LastBearingDeg         sql.NullInt64  `json:"last_bearing_deg"`
 	LastKnownDistanceKmU4  sql.NullInt64  `json:"last_known_distance_km_u4"`
 	LastUpdatedSno         sql.NullString `json:"last_updated_sno"`
 	Errors                 db.RunErrors   `json:"errors"`

@@ -139,7 +139,9 @@ CREATE TABLE
 
         last_known_snapped_lat_u6 INTEGER,
         last_known_snapped_lng_u6 INTEGER,
+        
         last_route_frac_u4 INTEGER,
+        last_bearing_deg INTEGER,
 
         last_known_distance_km_u4 INTEGER,
         last_updated_sno TEXT,
@@ -156,6 +158,10 @@ CREATE TABLE
 CREATE INDEX IF NOT EXISTS idx_train_runs_schedule_date ON train_runs (schedule_id, run_date);
 
 CREATE INDEX IF NOT EXISTS idx_train_runs_poll ON train_runs (has_arrived, run_date, last_update_timestamp_ISO);
+
+CREATE INDEX IF NOT EXISTS idx_train_runs_active_map 
+ON train_runs (has_arrived, last_known_snapped_lat_u6, last_known_snapped_lng_u6) 
+WHERE has_arrived = 0 AND last_known_snapped_lat_u6 IS NOT NULL AND last_known_snapped_lng_u6 IS NOT NULL;
 
 -- TIME SERIES LOCATION LOG
 CREATE TABLE
