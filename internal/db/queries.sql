@@ -66,13 +66,13 @@ bearingcalc AS (
     CASE
       WHEN frac >= 0.999 THEN
         ST_Azimuth(
-          ST_Line_Interpolate_Point(route_geom, GREATEST(0.0, frac - 0.0005)),
+          ST_Line_Interpolate_Point(route_geom, MAX(0.0, frac - 0.0005)),
           snappt
         )
       ELSE
         ST_Azimuth(
           snappt,
-          ST_Line_Interpolate_Point(route_geom, LEAST(1.0, frac + 0.0005))
+          ST_Line_Interpolate_Point(route_geom, MIN(1.0, frac + 0.0005))
         )
     END AS bearing_rad
   FROM fraccalc
