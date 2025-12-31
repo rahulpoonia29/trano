@@ -39,29 +39,23 @@ func init() {
 	sql.Register(driverName,
 		&sqlite3.SQLiteDriver{
 			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-				if err := loadSpatialite(conn); err != nil {
-					return fmt.Errorf("spatialite initialization failed: %w", err)
+				if err := conn.LoadExtension("mod_spatialite", "sqlite3_modspatialite_init"); err != nil {
+					return fmt.Errorf("failed to load spatialite: %w (ensure libsqlite3-mod-spatialite is installed)", err)
 				}
+
+				// Initialize spatial metadata
+				if _, err := conn.Exec("SELECT InitSpatialMetaData(1)", nil); err != nil {
+					return fmt.Errorf("InitSpatialMetaData failed: %w", err)
+				}
+
 				return nil
 			},
 		})
 }
 
-func loadSpatialite(conn *sqlite3.SQLiteConn) error {
-	if _, err := conn.Exec("SELECT load_extension('mod_spatialite')", nil); err != nil {
-		return fmt.Errorf("load_extension failed: %w (ensure libsqlite3-mod-spatialite is installed)", err)
-	}
-
-	if _, err := conn.Exec("SELECT InitSpatialMetaData(1)", nil); err != nil {
-		return fmt.Errorf("InitSpatialMetaData failed: %w", err)
-	}
-
-	return nil
-}
-
 func buildDSN(dbPath string, opts DatabaseOptions) string {
 	return fmt.Sprintf(
-		"file:%s?_foreign_keys=%v&_journal_mode=%s&_busy_timeout=%d&_synchronous=%s&_cache_size=%d&_extensions=1",
+		"file:%s?_foreign_keys=%v&_journal_mode=%s&_busy_timeout=%d&_synchronous=%s&_cache_size=%d",
 		dbPath,
 		opts.ForeignKeysEnabled,
 		opts.JournalMode,
