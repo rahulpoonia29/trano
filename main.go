@@ -4,24 +4,21 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-
 	"trano/internal/api"
 	"trano/internal/config"
+	dbutil "trano/internal/db"
 	db "trano/internal/db/sqlc"
 	"trano/internal/iri"
 	"trano/internal/poller"
-	"trano/internal/scheduler"
 
 	_ "github.com/mattn/go-sqlite3"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -38,7 +35,7 @@ func main() {
 	cfg := config.Load()
 	logger.Printf("configuration loaded | db_path: %s | timezone: %s", cfg.Database.Path, cfg.Timezone)
 
-	dbConn, err := initDatabase(cfg.Database, logger)
+	dbConn, err := dbutil.OpenDatabase(cfg.Database, dbutil.DefaultDatabaseOptions(), logger)
 	if err != nil {
 		logger.Fatalf("failed to initialize database: %v", err)
 	}
@@ -48,7 +45,6 @@ func main() {
 		}
 	}()
 
-	configureConnectionPool(dbConn, cfg.Database, logger)
 	queries := db.New(dbConn)
 
 	loc, err := time.LoadLocation(cfg.Timezone)
@@ -64,9 +60,8 @@ func main() {
 		TotalErrorThreshold:  cfg.Poller.TotalErrorThreshold,
 	}
 
-	urls := loadTrainURLs(false)
-
-	client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 15), nil)
+	// urls := loadTrainURLs(false)
+	// client := iri.NewClient(rate.NewLimiter(rate.Every(10*time.Second), 15), nil)
 
 	// logger.Printf("running initial sync with %d trains", len(urls))
 	// if err := client.ExecuteSyncCycle(ctx, dbConn, logger, int(cfg.Syncer.Concurrency), urls); err != nil {
@@ -74,21 +69,74 @@ func main() {
 	// }
 	// logger.Println("initial sync completed")
 
-	startTime := time.Now().In(loc)
-	logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
-	scheduler.GenerateRunsForDate(ctx, queries, logger, startTime)
+	// startTime := time.Now().In(loc)
+	// logger.Printf("running initial schedule generation for %s", startTime.Format(time.DateOnly))
+	// queries.GenerateRunsForDate(ctx, db.GenerateRunsForDateParams{
+	// 	RunDate: startTime.Format(time.DateOnly),
+	// 	Weekday: int(startTime.Weekday()),
+	// })
 
-	logger.Println("starting sync manager")
-	go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
+	// logger.Println("starting sync manager")
+	// go runSyncManager(ctx, dbConn, logger, cfg, urls, client)
 
-	logger.Println("starting scheduler")
-	go runSchedulerTicker(ctx, queries, logger, loc)
+	// logger.Println("starting scheduler")
+	// go runSchedulerTicker(ctx, queries, logger, loc)
 
 	logger.Println("starting api server")
-	apiSrv := api.NewServer(cfg.Server, queries, dbConn, logger)
+	var apiSrv *api.Server
+	var apiSrvMu sync.Mutex
+
+	startAPIServer := func() {
+		go func() {
+			// If existing server is present, shut it down
+			apiSrvMu.Lock()
+			old := apiSrv
+			apiSrvMu.Unlock()
+
+			if old != nil {
+				logger.Println("api: shutting down existing server for restart")
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+				defer shutdownCancel()
+				if err := old.Shutdown(shutdownCtx); err != nil {
+					logger.Printf("api: error shutting down existing server: %v", err)
+				} else {
+					logger.Println("api: existing server shut down")
+				}
+			}
+
+			srv, err := api.NewServer(cfg.Server, cfg.Database, pollerCfg, logger)
+			if err != nil {
+				logger.Printf("api: failed to initialize server: %v", err)
+				return
+			}
+
+			apiSrvMu.Lock()
+			apiSrv = srv
+			apiSrvMu.Unlock()
+
+			go func(s *api.Server) {
+				if err := s.Start(); err != nil {
+					logger.Printf("api server failed: %v", err)
+				}
+			}(srv)
+		}()
+	}
+
+	// initial start
+	startAPIServer()
+
+	// SIGHUP handling: restart the API server without affecting other components.
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
 	go func() {
-		if err := apiSrv.Start(); err != nil {
-			logger.Fatalf("api server failed: %v", err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sighupCh:
+				logger.Println("SIGHUP received: restarting api server")
+				startAPIServer()
+			}
 		}
 	}()
 
@@ -102,8 +150,11 @@ func main() {
 	defer shutdownCancel()
 
 	// gracefully stop the API server if it's running
-	if apiSrv != nil {
-		if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+	apiSrvMu.Lock()
+	srvToShutdown := apiSrv
+	apiSrvMu.Unlock()
+	if srvToShutdown != nil {
+		if err := srvToShutdown.Shutdown(shutdownCtx); err != nil {
 			logger.Printf("error shutting down api server: %v", err)
 		} else {
 			logger.Println("api server shut down")
@@ -113,75 +164,6 @@ func main() {
 	// wait for remaining background work or timeout
 	<-shutdownCtx.Done()
 	logger.Println("application stopped")
-}
-
-func initDatabase(dbCfg config.DatabaseConfig, logger *log.Logger) (*sql.DB, error) {
-	dataDir := filepath.Dir(dbCfg.Path)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	dsn := fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=2000", dbCfg.Path)
-	dbConn, err := sql.Open("sqlite3", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Load SpatiaLite extension
-	_, err = dbConn.Exec("SELECT load_extension('mod_spatialite')")
-	if err != nil {
-		logger.Printf("failed to load spatialite: %v. Ensure libsqlite3-mod-spatialite is installed.", err)
-		return nil, err
-	}
-
-	// Initialize Spatial Metadata if not exists
-	_, err = dbConn.Exec("SELECT InitSpatialMetaData(1);")
-	if err != nil {
-		logger.Printf("InitSpatialMetaData failed: %v", err)
-	}
-
-	if err := dbConn.Ping(); err != nil {
-		dbConn.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-	logger.Printf("database opened: %s", dbCfg.Path)
-
-	if err := applyMigrations(dbConn, logger); err != nil {
-		dbConn.Close()
-		return nil, fmt.Errorf("failed to apply migrations: %w", err)
-	}
-
-	var journalMode string
-	if err := dbConn.QueryRow("PRAGMA journal_mode;").Scan(&journalMode); err != nil {
-		logger.Printf("warning: failed to check journal mode: %v", err)
-	} else {
-		logger.Printf("journal mode: %s", journalMode)
-	}
-
-	return dbConn, nil
-}
-
-func configureConnectionPool(dbConn *sql.DB, dbCfg config.DatabaseConfig, logger *log.Logger) {
-	dbConn.SetMaxOpenConns(dbCfg.MaxOpenConnections)
-	dbConn.SetMaxIdleConns(dbCfg.MaxIdleConnections)
-	dbConn.SetConnMaxLifetime(dbCfg.ConnectionMaxLifetime)
-	dbConn.SetConnMaxIdleTime(dbCfg.ConnectionMaxIdleTime)
-
-	logger.Printf("connection pool configured | max_open: %d | max_idle: %d | max_lifetime: %v | max_idle_time: %v",
-		dbCfg.MaxOpenConnections, dbCfg.MaxIdleConnections, dbCfg.ConnectionMaxLifetime, dbCfg.ConnectionMaxIdleTime)
-}
-
-func applyMigrations(dbConn *sql.DB, logger *log.Logger) error {
-	schemaPath := "./internal/db/schema.sql"
-	schema, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return fmt.Errorf("failed to read schema file: %w", err)
-	}
-	if _, err := dbConn.Exec(string(schema)); err != nil {
-		return fmt.Errorf("failed to execute schema: %w", err)
-	}
-	logger.Println("migrations applied successfully")
-	return nil
 }
 
 func runSchedulerTicker(ctx context.Context, queries *db.Queries, logger *log.Logger, loc *time.Location) {
@@ -213,7 +195,10 @@ func runSchedulerTicker(ctx context.Context, queries *db.Queries, logger *log.Lo
 		case tick := <-ticker.C:
 			runDate := tick.In(loc)
 			logger.Printf("running scheduled generation for %s", runDate.Format(time.DateOnly))
-			scheduler.GenerateRunsForDate(ctx, queries, logger, runDate)
+			queries.GenerateRunsForDate(ctx, db.GenerateRunsForDateParams{
+				RunDate: runDate.String(),
+				Weekday: int(runDate.Weekday()),
+			})
 		}
 	}
 }

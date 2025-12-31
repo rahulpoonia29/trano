@@ -579,11 +579,11 @@ func processValidResponse(
 		LngU6:              lngU6,
 		SnappedLatU6:       snappedLat,
 		SnappedLngU6:       snappedLng,
-		RouteFracU4:        routeFrac,
 		DistanceKmU4:       distU4,
 		SegmentStationCode: segStn,
 		AtStation:          atStationInt,
 		TimestampIso:       lastUpdateIso.String,
+		// RouteFracU4:        routeFrac,
 	}); err != nil {
 		logger.Printf("failed to log location for %s: %v", run.RunID, err)
 		return result

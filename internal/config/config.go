@@ -10,6 +10,7 @@ type Config struct {
 	Database DatabaseConfig
 	Poller   PollerConfig
 	Syncer   SyncerConfig
+	Server   ServerConfig
 	Timezone string
 }
 
@@ -33,6 +34,14 @@ type SyncerConfig struct {
 	Concurrency int16
 }
 
+type ServerConfig struct {
+	Addr            string
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
+	ShutdownTimeout time.Duration
+}
+
 func Load() *Config {
 	return &Config{
 		Database: DatabaseConfig{
@@ -51,6 +60,13 @@ func Load() *Config {
 		},
 		Syncer: SyncerConfig{
 			Concurrency: int16(getEnvAsInt("SYNCER_CONCURRENCY", 2)),
+		},
+		Server: ServerConfig{
+			Addr:            getEnv("SERVER_ADDR", ":8080"),
+			ReadTimeout:     getEnvAsDuration("SERVER_READ_TIMEOUT", 5*time.Second),
+			WriteTimeout:    getEnvAsDuration("SERVER_WRITE_TIMEOUT", 10*time.Second),
+			IdleTimeout:     getEnvAsDuration("SERVER_IDLE_TIMEOUT", 120*time.Second),
+			ShutdownTimeout: getEnvAsDuration("SERVER_SHUTDOWN_TIMEOUT", 10*time.Second),
 		},
 		Timezone: getEnv("TIMEZONE", "Asia/Kolkata"),
 	}

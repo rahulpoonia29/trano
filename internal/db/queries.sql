@@ -37,23 +37,38 @@ ORDER BY tr.last_update_timestamp_ISO ASC NULLS FIRST;
 
 -- name: GetRunSnap :one
 -- Snap raw GPS to route and compute linear reference
+WITH snapped AS (
+    SELECT
+        ClosestPoint(
+            trg.route_geom,
+            ST_Transform(MakePoint(@lng, @lat, 4326), 7755)
+        ) AS snap_7755,
+        trg.route_geom
+    FROM train_runs tr
+    JOIN train_route_geometries trg
+        ON tr.schedule_id = trg.schedule_id
+    WHERE tr.run_id = @run_id
+      AND ST_IsValid(trg.route_geom) = 1
+)
 SELECT
     CAST(
-        X(ClosestPoint(trg.route_geom, MakePoint(@lng, @lat, 4326)))
-        * 1000000 AS INTEGER
+        X(ST_Transform(snap_7755, 4326)) * 1000000
+        AS INTEGER
     ) AS snapped_lng_u6,
+
     CAST(
-        Y(ClosestPoint(trg.route_geom, MakePoint(@lng, @lat, 4326)))
-        * 1000000 AS INTEGER
+        Y(ST_Transform(snap_7755, 4326)) * 1000000
+        AS INTEGER
     ) AS snapped_lat_u6,
+
     CAST(
-        Line_Locate_Point(trg.route_geom, MakePoint(@lng, @lat, 4326))
-        * 10000 AS INTEGER
+        Line_Locate_Point(
+            route_geom,
+            snap_7755
+        ) * 10000
+        AS INTEGER
     ) AS route_frac_u4
-FROM train_runs tr
-JOIN train_route_geometries trg
-    ON tr.schedule_id = trg.schedule_id
-WHERE tr.run_id = @run_id;
+FROM snapped;
 
 -- name: UpdateRunStatus :exec
 -- Partial, idempotent update of run state
@@ -81,7 +96,6 @@ INSERT INTO train_run_locations (
     lng_u6,
     snapped_lat_u6,
     snapped_lng_u6,
-    route_frac_u4,
     distance_km_u4,
     segment_station_code,
     at_station,
@@ -92,7 +106,6 @@ INSERT INTO train_run_locations (
     @lng_u6,
     @snapped_lat_u6,
     @snapped_lng_u6,
-    @route_frac_u4,
     @distance_km_u4,
     @segment_station_code,
     @at_station,
@@ -264,11 +277,21 @@ ON CONFLICT(run_id) DO UPDATE SET
     schedule_id = excluded.schedule_id,
     updated_at = CURRENT_TIMESTAMP;
 
--- name: ListActiveSchedules :many
-SELECT
+-- name: GenerateRunsForDate :exec
+INSERT INTO train_runs (
+    run_id,
     schedule_id,
     train_no,
-    origin_station_code,
-    terminus_station_code
-FROM train_schedules
-WHERE (running_days_bitmap & (1 << @weekday)) <> 0;
+    run_date
+)
+SELECT
+    printf('%d_%s', ts.train_no, @run_date) AS run_id,
+    ts.schedule_id,
+    ts.train_no,
+    @run_date
+FROM train_schedules ts
+JOIN trains t
+    ON ts.train_no = t.train_no
+WHERE (ts.running_days_bitmap & (1 << @weekday)) <> 0
+  AND t.train_type = 'Duronto'
+ON CONFLICT (train_no, run_date) DO NOTHING;

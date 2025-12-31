@@ -87,7 +87,8 @@ CREATE INDEX IF NOT EXISTS idx_train_routes_station ON train_routes (station_cod
 CREATE TABLE
     IF NOT EXISTS train_route_geometries (
         schedule_id INTEGER PRIMARY KEY,
-        train_no INTEGER NOT NULL,
+        route_geom BLOB,
+        -- train_no INTEGER NOT NULL,
         FOREIGN KEY (schedule_id) REFERENCES train_schedules (schedule_id) ON DELETE CASCADE
     );
 
@@ -103,16 +104,24 @@ SELECT
         ) THEN AddGeometryColumn (
             'train_route_geometries',
             'route_geom',
-            4326,
+            7755,
             'LINESTRING',
             'XY'
         )
     END;
 
 SELECT
-    CreateSpatialIndex ('train_route_geometries', 'route_geom');
+    CASE
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+                AND name = 'idx_train_route_geometries_route_geom'
+            )
+            THEN CreateSpatialIndex('train_route_geometries', 'route_geom')
+        END;
 
-CREATE INDEX IF NOT EXISTS idx_train_route_geometries_train_no ON train_route_geometries (train_no);
+CREATE INDEX IF NOT EXISTS idx_train_route_geometries_train_no ON train_route_geometries (schedule_id);
 
 -- TRAIN RUN (one physical run on a specific date)
 CREATE TABLE
@@ -159,7 +168,6 @@ CREATE TABLE
         snapped_lat_u6 INTEGER,
         snapped_lng_u6 INTEGER,
 
-        route_frac_u4 INTEGER,
         distance_km_u4 INTEGER NOT NULL,
         segment_station_code TEXT NOT NULL,
         at_station INTEGER NOT NULL DEFAULT 0,

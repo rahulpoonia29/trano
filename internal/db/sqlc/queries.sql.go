@@ -36,24 +36,69 @@ func (q *Queries) ClearRunningDayBitForDate(ctx context.Context, arg ClearRunnin
 	return err
 }
 
+const generateRunsForDate = `-- name: GenerateRunsForDate :exec
+INSERT INTO train_runs (
+    run_id,
+    schedule_id,
+    train_no,
+    run_date
+)
+SELECT
+    printf('%d_%s', ts.train_no, ?1) AS run_id,
+    ts.schedule_id,
+    ts.train_no,
+    ?1
+FROM train_schedules ts
+JOIN trains t
+    ON ts.train_no = t.train_no
+WHERE (ts.running_days_bitmap & (1 << ?2)) <> 0
+  AND t.train_type = 'Duronto'
+ON CONFLICT (train_no, run_date) DO NOTHING
+`
+
+type GenerateRunsForDateParams struct {
+	RunDate string      `json:"run_date"`
+	Weekday interface{} `json:"weekday"`
+}
+
+func (q *Queries) GenerateRunsForDate(ctx context.Context, arg GenerateRunsForDateParams) error {
+	_, err := q.db.ExecContext(ctx, generateRunsForDate, arg.RunDate, arg.Weekday)
+	return err
+}
+
 const getRunSnap = `-- name: GetRunSnap :one
+WITH snapped AS (
+    SELECT
+        ClosestPoint(
+            trg.route_geom,
+            ST_Transform(MakePoint(?1, ?2, 4326), 7755)
+        ) AS snap_7755,
+        trg.route_geom
+    FROM train_runs tr
+    JOIN train_route_geometries trg
+        ON tr.schedule_id = trg.schedule_id
+    WHERE tr.run_id = ?3
+      AND ST_IsValid(trg.route_geom) = 1
+)
 SELECT
     CAST(
-        X(ClosestPoint(trg.route_geom, MakePoint(?1, ?2, 4326)))
-        * 1000000 AS INTEGER
+        X(ST_Transform(snap_7755, 4326)) * 1000000
+        AS INTEGER
     ) AS snapped_lng_u6,
+
     CAST(
-        Y(ClosestPoint(trg.route_geom, MakePoint(?1, ?2, 4326)))
-        * 1000000 AS INTEGER
+        Y(ST_Transform(snap_7755, 4326)) * 1000000
+        AS INTEGER
     ) AS snapped_lat_u6,
+
     CAST(
-        Line_Locate_Point(trg.route_geom, MakePoint(?1, ?2, 4326))
-        * 10000 AS INTEGER
+        Line_Locate_Point(
+            route_geom,
+            snap_7755
+        ) * 10000
+        AS INTEGER
     ) AS route_frac_u4
-FROM train_runs tr
-JOIN train_route_geometries trg
-    ON tr.schedule_id = trg.schedule_id
-WHERE tr.run_id = ?3
+FROM snapped
 `
 
 type GetRunSnapParams struct {
@@ -74,51 +119,6 @@ func (q *Queries) GetRunSnap(ctx context.Context, arg GetRunSnapParams) (GetRunS
 	var i GetRunSnapRow
 	err := row.Scan(&i.SnappedLngU6, &i.SnappedLatU6, &i.RouteFracU4)
 	return i, err
-}
-
-const listActiveSchedules = `-- name: ListActiveSchedules :many
-SELECT
-    schedule_id,
-    train_no,
-    origin_station_code,
-    terminus_station_code
-FROM train_schedules
-WHERE (running_days_bitmap & (1 << ?1)) <> 0
-`
-
-type ListActiveSchedulesRow struct {
-	ScheduleID          int64  `json:"schedule_id"`
-	TrainNo             int64  `json:"train_no"`
-	OriginStationCode   string `json:"origin_station_code"`
-	TerminusStationCode string `json:"terminus_station_code"`
-}
-
-func (q *Queries) ListActiveSchedules(ctx context.Context, weekday interface{}) ([]ListActiveSchedulesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listActiveSchedules, weekday)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListActiveSchedulesRow{}
-	for rows.Next() {
-		var i ListActiveSchedulesRow
-		if err := rows.Scan(
-			&i.ScheduleID,
-			&i.TrainNo,
-			&i.OriginStationCode,
-			&i.TerminusStationCode,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listRunsToPoll = `-- name: ListRunsToPoll :many
@@ -221,7 +221,6 @@ INSERT INTO train_run_locations (
     lng_u6,
     snapped_lat_u6,
     snapped_lng_u6,
-    route_frac_u4,
     distance_km_u4,
     segment_station_code,
     at_station,
@@ -235,8 +234,7 @@ INSERT INTO train_run_locations (
     ?6,
     ?7,
     ?8,
-    ?9,
-    ?10
+    ?9
 )
 ON CONFLICT(run_id, timestamp_ISO) DO NOTHING
 `
@@ -247,7 +245,6 @@ type LogRunLocationParams struct {
 	LngU6              int64         `json:"lng_u6"`
 	SnappedLatU6       sql.NullInt64 `json:"snapped_lat_u6"`
 	SnappedLngU6       sql.NullInt64 `json:"snapped_lng_u6"`
-	RouteFracU4        sql.NullInt64 `json:"route_frac_u4"`
 	DistanceKmU4       int64         `json:"distance_km_u4"`
 	SegmentStationCode string        `json:"segment_station_code"`
 	AtStation          int64         `json:"at_station"`
@@ -261,7 +258,6 @@ func (q *Queries) LogRunLocation(ctx context.Context, arg LogRunLocationParams) 
 		arg.LngU6,
 		arg.SnappedLatU6,
 		arg.SnappedLngU6,
-		arg.RouteFracU4,
 		arg.DistanceKmU4,
 		arg.SegmentStationCode,
 		arg.AtStation,
