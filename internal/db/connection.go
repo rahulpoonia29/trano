@@ -9,7 +9,12 @@ import (
 
 	"trano/internal/config"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
+)
+
+const (
+	driverName = "sqlite3_spatialite"
+	schemaPath = "./schema.sql"
 )
 
 type DatabaseOptions struct {
@@ -30,6 +35,30 @@ func DefaultDatabaseOptions() DatabaseOptions {
 	}
 }
 
+func init() {
+	sql.Register(driverName,
+		&sqlite3.SQLiteDriver{
+			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+				if err := loadSpatialite(conn); err != nil {
+					return fmt.Errorf("spatialite initialization failed: %w", err)
+				}
+				return nil
+			},
+		})
+}
+
+func loadSpatialite(conn *sqlite3.SQLiteConn) error {
+	if _, err := conn.Exec("SELECT load_extension('mod_spatialite')", nil); err != nil {
+		return fmt.Errorf("load_extension failed: %w (ensure libsqlite3-mod-spatialite is installed)", err)
+	}
+
+	if _, err := conn.Exec("SELECT InitSpatialMetaData(1)", nil); err != nil {
+		return fmt.Errorf("InitSpatialMetaData failed: %w", err)
+	}
+
+	return nil
+}
+
 func buildDSN(dbPath string, opts DatabaseOptions) string {
 	return fmt.Sprintf(
 		"file:%s?_foreign_keys=%v&_journal_mode=%s&_busy_timeout=%d&_synchronous=%s&_cache_size=%d&_extensions=1",
@@ -43,34 +72,21 @@ func buildDSN(dbPath string, opts DatabaseOptions) string {
 }
 
 func OpenDatabase(dbCfg config.DatabaseConfig, opts DatabaseOptions, logger *log.Logger) (*sql.DB, error) {
-	dataDir := filepath.Dir(dbCfg.Path)
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	dsn := buildDSN(dbCfg.Path, opts)
-	dbConn, err := sql.Open("sqlite3", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Attempt to load SpatiaLite extension, return error on fail
-	// the caller may choose to treat that as fatal or continue based on their needs
-	if _, err = dbConn.Exec("SELECT load_extension('mod_spatialite')"); err != nil {
-		logger.Printf("failed to load spatialite: %v. Ensure libsqlite3-mod-spatialite is installed.", err)
-		_ = dbConn.Close()
+	if err := ensureDataDirectory(dbCfg.Path); err != nil {
 		return nil, err
 	}
 
-	// Init Spatial Metadata if it hasn't been created already
-	if _, err = dbConn.Exec("SELECT InitSpatialMetaData(1);"); err != nil {
-		logger.Printf("InitSpatialMetaData failed: %v", err)
+	dsn := buildDSN(dbCfg.Path, opts)
+	dbConn, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	if err := dbConn.Ping(); err != nil {
 		_ = dbConn.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
+
 	logger.Printf("database opened: %s", dbCfg.Path)
 
 	if err := applyMigrations(dbConn, logger); err != nil {
@@ -78,15 +94,20 @@ func OpenDatabase(dbCfg config.DatabaseConfig, opts DatabaseOptions, logger *log
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
-	if jm, err := checkJournalMode(dbConn); err != nil {
-		logger.Printf("warning: failed to check journal mode: %v", err)
-	} else {
-		logger.Printf("journal mode: %s", jm)
+	if err := verifyJournalMode(dbConn, logger); err != nil {
+		logger.Printf("warning: %v", err)
 	}
 
 	configureConnectionPool(dbConn, dbCfg, logger)
-
 	return dbConn, nil
+}
+
+func ensureDataDirectory(dbPath string) error {
+	dataDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+	return nil
 }
 
 func configureConnectionPool(dbConn *sql.DB, dbCfg config.DatabaseConfig, logger *log.Logger) {
@@ -96,26 +117,32 @@ func configureConnectionPool(dbConn *sql.DB, dbCfg config.DatabaseConfig, logger
 	dbConn.SetConnMaxIdleTime(dbCfg.ConnectionMaxIdleTime)
 
 	logger.Printf("connection pool configured | max_open: %d | max_idle: %d | max_lifetime: %v | max_idle_time: %v",
-		dbCfg.MaxOpenConnections, dbCfg.MaxIdleConnections, dbCfg.ConnectionMaxLifetime, dbCfg.ConnectionMaxIdleTime)
+		dbCfg.MaxOpenConnections,
+		dbCfg.MaxIdleConnections,
+		dbCfg.ConnectionMaxLifetime,
+		dbCfg.ConnectionMaxIdleTime)
 }
 
 func applyMigrations(dbConn *sql.DB, logger *log.Logger) error {
-	schemaPath := "./schema.sql"
 	schema, err := os.ReadFile(schemaPath)
 	if err != nil {
 		return fmt.Errorf("failed to read schema file: %w", err)
 	}
+
 	if _, err := dbConn.Exec(string(schema)); err != nil {
 		return fmt.Errorf("failed to execute schema: %w", err)
 	}
+
 	logger.Println("migrations applied successfully")
 	return nil
 }
 
-func checkJournalMode(dbConn *sql.DB) (string, error) {
+func verifyJournalMode(dbConn *sql.DB, logger *log.Logger) error {
 	var journalMode string
 	if err := dbConn.QueryRow("PRAGMA journal_mode;").Scan(&journalMode); err != nil {
-		return "", err
+		return fmt.Errorf("failed to check journal mode: %w", err)
 	}
-	return journalMode, nil
+
+	logger.Printf("journal mode: %s", journalMode)
+	return nil
 }
