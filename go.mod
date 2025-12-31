@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
+	github.com/go-chi/chi/v5 v5.2.3
 	github.com/imroc/req/v3 v3.56.0
 	github.com/mattn/go-sqlite3 v1.14.32
 	golang.org/x/sync v0.18.0

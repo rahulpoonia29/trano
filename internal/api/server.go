@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"trano/internal/config"
 	dbutil "trano/internal/db"
@@ -41,12 +43,12 @@ func NewServer(cfg config.ServerConfig, dbCfg config.DatabaseConfig, pollerCfg p
 		logger:    logger,
 	}
 
-	mux := http.NewServeMux()
-	s.registerRoutes(mux)
+	r := chi.NewRouter()
+	s.registerRoutes(r)
 
 	s.srv = &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      s.loggingMiddleware(mux),
+		Handler:      s.loggingMiddleware(r),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
@@ -81,96 +83,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", s.healthHandler)
-	mux.HandleFunc("/readyz", s.readyHandler)
+func (s *Server) registerRoutes(r chi.Router) {
+	r.Get("/healthz", s.healthHandler)
 
-	mux.HandleFunc("/v1/poll/runs", s.listRunsToPollHandler)
+	r.Get("/v1/runs/{train_no}/{run_date}", s.getRunHandler)
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// attempts to ping the databas
-func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.db == nil {
-		http.Error(w, "no database configured", http.StatusServiceUnavailable)
-		return
-	}
-	if err := s.db.PingContext(ctx); err != nil {
-		s.logger.Printf("api: readiness check failed: %v", err)
-		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-}
-
-// listRunsToPollHandler returns a JSON array of runs that the poller would
-// attempt to poll given the provided time and thresholds. It relies on the
-// existing sqlc-generated query ListRunsToPoll.
-func (s *Server) listRunsToPollHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	q := r.URL.Query()
-
-	// parse `now` param (accept RFC3339 or the familiar SQL datetime layout).
-	var now time.Time
-	if nowStr := q.Get("now"); nowStr != "" {
-		var err error
-		now, err = time.Parse(time.RFC3339, nowStr)
-		if err != nil {
-			now, err = time.Parse(time.DateTime, nowStr)
-			if err != nil {
-				http.Error(w, "invalid 'now' parameter; use RFC3339 or '2006-01-02 15:04:05'", http.StatusBadRequest)
-				return
-			}
-		}
-	} else {
-		now = time.Now()
-	}
-
-	// thresholds (allow overriding via query params)
-	staticThres := int64(s.pollerCfg.StaticErrorThreshold)
-	if v := q.Get("static_threshold"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-			staticThres = parsed
-		} else {
-			http.Error(w, "'static_threshold' must be an integer", http.StatusBadRequest)
-			return
-		}
-	}
-
-	totalThres := int64(s.pollerCfg.TotalErrorThreshold)
-	if v := q.Get("total_threshold"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-			totalThres = parsed
-		} else {
-			http.Error(w, "'total_threshold' must be an integer", http.StatusBadRequest)
-			return
-		}
-	}
-
-	rows, err := s.queries.ListRunsToPoll(ctx, db.ListRunsToPollParams{
-		NowTs:                   now.Format(time.DateTime),
-		StaticResponseThreshold: staticThres,
-		TotalErrorThreshold:     totalThres,
-	})
-	if err != nil {
-		s.logger.Printf("api: failed to list runs to poll: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, rows)
-}
-
-// loggingMiddleware instruments requests with simple structured logging and
-// recovers from panics so one handler cannot take down the server.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: 0}
+		requestID := fmt.Sprintf("%d", start.UnixNano())
+		rec := &statusRecorder{ResponseWriter: w, status: 0, start: start, requestID: requestID}
 
 		defer func() {
 			// recover from panics in handlers
@@ -186,16 +113,21 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// statusRecorder is an http.ResponseWriter wrapper that captures status and
-// number of bytes written for logging purposes.
+// http.ResponseWriter wrapper that captures status and number of bytes written for logging
 type statusRecorder struct {
 	http.ResponseWriter
-	status  int
-	written int64
+	status    int
+	written   int64
+	start     time.Time
+	requestID string
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
+	// Set response headers
+	processingTime := time.Since(r.start)
+	r.ResponseWriter.Header().Set("X-Processing-Time", processingTime.String())
+	r.ResponseWriter.Header().Set("X-Request-ID", r.requestID)
 	r.ResponseWriter.WriteHeader(status)
 }
 
@@ -209,7 +141,7 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// writeJSON is a small helper for consistent JSON responses.
+// helper for consistent JSON responses.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

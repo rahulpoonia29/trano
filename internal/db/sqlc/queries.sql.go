@@ -67,46 +67,50 @@ func (q *Queries) GenerateRunsForDate(ctx context.Context, arg GenerateRunsForDa
 
 const getRunSnap = `-- name: GetRunSnap :one
 WITH snapped AS (
-  SELECT 
-    ST_ClosestPoint(trg.routegeom, ST_Transform(ST_SetSRID(MakePoint(?1, ?2), 4326), 7755)) AS snappt,
+  SELECT
+    ST_ClosestPoint(
+      trg.route_geom,
+      ST_Transform(MakePoint(?1, ?2, 4326), 7755)
+    ) AS snappt,
     trg.route_geom
   FROM train_runs tr
-  JOIN train_route_geometries trg ON tr.scheduleid = trg.scheduleid
-  WHERE tr.run_id = ?3 AND ST_IsValid(trg.routegeom) = 1
+  JOIN train_route_geometries trg
+    ON tr.schedule_id = trg.schedule_id
+  WHERE tr.run_id = ?3
+    AND ST_IsValid(trg.route_geom) = 1
 ),
 fraccalc AS (
-  SELECT 
+  SELECT
     snappt,
     route_geom,
-    -- Calculate fraction: project point onto line and measure distance
-    ST_Project(ST_StartPoint(routegeom), snappt) / NULLIF(ST_Length(routegeom), 0.0) AS frac
+    ST_Distance(ST_StartPoint(route_geom), snappt) /
+      NULLIF(ST_Length(route_geom), 1.0) AS frac
   FROM snapped
 ),
 bearingcalc AS (
-  SELECT 
+  SELECT
     snappt,
+    route_geom,
     frac,
-    CASE 
-      WHEN frac >= 0.999 THEN 
-        -- Near end: bearing from previous point to snap point
+    CASE
+      WHEN frac >= 0.999 THEN
         ST_Azimuth(
-          ST_Line_Interpolate_Point(routegeom, GREATEST(0.0, frac - 0.0005)),
+          ST_Line_Interpolate_Point(route_geom, MAX(0.0, frac - 0.0005)),
           snappt
         )
-      ELSE 
-        -- Otherwise: bearing from snap point to next point
+      ELSE
         ST_Azimuth(
           snappt,
-          ST_Line_Interpolate_Point(routegeom, LEAST(1.0, frac + 0.0005))
+          ST_Line_Interpolate_Point(route_geom, MIN(1.0, frac + 0.0005))
         )
-    END AS bearingrad
+    END AS bearing_rad
   FROM fraccalc
 )
-SELECT 
+SELECT
   CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lng_u6,
   CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lat_u6,
   CAST(frac * 10000 AS INTEGER) AS route_frac_u4,
-  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearing_deg
+  CAST(ROUND(Degrees(bearing_rad)) % 360 AS INTEGER) AS bearing_deg
 FROM bearingcalc
 `
 
