@@ -32,7 +32,7 @@ func DefaultDatabaseOptions() DatabaseOptions {
 
 func buildDSN(dbPath string, opts DatabaseOptions) string {
 	return fmt.Sprintf(
-		"file:%s?_foreign_keys=%v&_journal_mode=%s&_busy_timeout=%d&_synchronous=%s&_cache_size=%d",
+		"file:%s?_foreign_keys=%v&_journal_mode=%s&_busy_timeout=%d&_synchronous=%s&_cache_size=%d&_extensions=1",
 		dbPath,
 		opts.ForeignKeysEnabled,
 		opts.JournalMode,
