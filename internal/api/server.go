@@ -8,13 +8,13 @@ import (
 	"log"
 	"net/http"
 	"time"
-
-	"github.com/go-chi/chi/v5"
-
 	"trano/internal/config"
 	dbutil "trano/internal/db"
 	db "trano/internal/db/sqlc"
 	"trano/internal/poller"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 type Server struct {
@@ -84,6 +84,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
+	// CORS middleware
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:3000"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
+
 	r.Get("/healthz", s.healthHandler)
 
 	r.Get("/v1/runs/{train_no}/{run_date}", s.getRunHandler)
