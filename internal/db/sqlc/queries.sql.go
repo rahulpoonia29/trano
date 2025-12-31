@@ -103,35 +103,35 @@ bearingcalc AS (
   FROM fraccalc
 )
 SELECT 
-  CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlngu6,
-  CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlatu6,
-  CAST(frac * 10000 AS INTEGER) AS routefracu4,
-  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearingdeg
+  CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lng_u6,
+  CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lat_u6,
+  CAST(frac * 10000 AS INTEGER) AS route_frac_u4,
+  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearing_deg
 FROM bearingcalc
 `
 
 type GetRunSnapParams struct {
 	Lng   interface{} `json:"lng"`
 	Lat   interface{} `json:"lat"`
-	Runid string      `json:"runid"`
+	RunID string      `json:"run_id"`
 }
 
 type GetRunSnapRow struct {
-	Snappedlngu6 int64 `json:"snappedlngu6"`
-	Snappedlatu6 int64 `json:"snappedlatu6"`
-	Routefracu4  int64 `json:"routefracu4"`
-	Bearingdeg   int64 `json:"bearingdeg"`
+	SnappedLngU6 int64 `json:"snapped_lng_u6"`
+	SnappedLatU6 int64 `json:"snapped_lat_u6"`
+	RouteFracU4  int64 `json:"route_frac_u4"`
+	BearingDeg   int64 `json:"bearing_deg"`
 }
 
 // Snap raw GPS to route and compute linear reference bearing
 func (q *Queries) GetRunSnap(ctx context.Context, arg GetRunSnapParams) (GetRunSnapRow, error) {
-	row := q.db.QueryRowContext(ctx, getRunSnap, arg.Lng, arg.Lat, arg.Runid)
+	row := q.db.QueryRowContext(ctx, getRunSnap, arg.Lng, arg.Lat, arg.RunID)
 	var i GetRunSnapRow
 	err := row.Scan(
-		&i.Snappedlngu6,
-		&i.Snappedlatu6,
-		&i.Routefracu4,
-		&i.Bearingdeg,
+		&i.SnappedLngU6,
+		&i.SnappedLatU6,
+		&i.RouteFracU4,
+		&i.BearingDeg,
 	)
 	return i, err
 }

@@ -43,7 +43,7 @@ WITH snapped AS (
     trg.route_geom
   FROM train_runs tr
   JOIN train_route_geometries trg ON tr.scheduleid = trg.scheduleid
-  WHERE tr.run_id = :runid AND ST_IsValid(trg.routegeom) = 1
+  WHERE tr.run_id = :run_id AND ST_IsValid(trg.routegeom) = 1
 ),
 fraccalc AS (
   SELECT 
@@ -74,10 +74,10 @@ bearingcalc AS (
   FROM fraccalc
 )
 SELECT 
-  CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlngu6,
-  CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlatu6,
-  CAST(frac * 10000 AS INTEGER) AS routefracu4,
-  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearingdeg
+  CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lng_u6,
+  CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snapped_lat_u6,
+  CAST(frac * 10000 AS INTEGER) AS route_frac_u4,
+  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearing_deg
 FROM bearingcalc;
 
 -- name: UpdateRunStatus :exec
