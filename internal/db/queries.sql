@@ -293,5 +293,4 @@ FROM train_schedules ts
 JOIN trains t
     ON ts.train_no = t.train_no
 WHERE (ts.running_days_bitmap & (1 << @weekday)) <> 0
-  AND t.train_type = 'Duronto'
 ON CONFLICT (train_no, run_date) DO NOTHING;
