@@ -67,73 +67,71 @@ func (q *Queries) GenerateRunsForDate(ctx context.Context, arg GenerateRunsForDa
 
 const getRunSnap = `-- name: GetRunSnap :one
 WITH snapped AS (
-    SELECT
-        ST_ClosestPoint(
-            trg.route_geom,
-            ST_Transform(SetSRID(MakePoint(?1, ?2), 4326), 7755)
-        ) AS snap_pt,
-        trg.route_geom
-    FROM train_runs tr
-    JOIN train_route_geometries trg
-        ON tr.schedule_id = trg.schedule_id
-    WHERE tr.run_id = ?3
-      AND ST_IsValid(trg.route_geom) = 1
+  SELECT 
+    ST_ClosestPoint(trg.routegeom, ST_Transform(ST_SetSRID(MakePoint(?1, ?2), 4326), 7755)) AS snappt,
+    trg.route_geom
+  FROM train_runs tr
+  JOIN train_route_geometries trg ON tr.scheduleid = trg.scheduleid
+  WHERE tr.run_id = ?3 AND ST_IsValid(trg.routegeom) = 1
 ),
-frac_calc AS (
-    SELECT
-        snap_pt,
-        route_geom,
-        ST_LineLocatePoint(route_geom, snap_pt) AS frac
-    FROM snapped
+fraccalc AS (
+  SELECT 
+    snappt,
+    route_geom,
+    -- Calculate fraction: project point onto line and measure distance
+    ST_Project(ST_StartPoint(routegeom), snappt) / NULLIF(ST_Length(routegeom), 0.0) AS frac
+  FROM snapped
 ),
-bearing_calc AS (
-    SELECT
-        snap_pt,
-        frac,
-        CASE
-            WHEN frac >= 0.999 THEN
-                ST_Azimuth(
-                    ST_LineInterpolatePoint(route_geom, GREATEST(0.0, frac - 0.0005)),
-                    snap_pt
-                )
-            ELSE
-                ST_Azimuth(
-                    snap_pt,
-                    ST_LineInterpolatePoint(route_geom, LEAST(1.0, frac + 0.0005))
-                )
-        END AS bearing_rad
-    FROM frac_calc
+bearingcalc AS (
+  SELECT 
+    snappt,
+    frac,
+    CASE 
+      WHEN frac >= 0.999 THEN 
+        -- Near end: bearing from previous point to snap point
+        ST_Azimuth(
+          ST_Line_Interpolate_Point(routegeom, GREATEST(0.0, frac - 0.0005)),
+          snappt
+        )
+      ELSE 
+        -- Otherwise: bearing from snap point to next point
+        ST_Azimuth(
+          snappt,
+          ST_Line_Interpolate_Point(routegeom, LEAST(1.0, frac + 0.0005))
+        )
+    END AS bearingrad
+  FROM fraccalc
 )
-SELECT
-    CAST(X(ST_Transform(snap_pt, 4326)) * 1000000 AS INTEGER) AS snapped_lng_u6,
-    CAST(Y(ST_Transform(snap_pt, 4326)) * 1000000 AS INTEGER) AS snapped_lat_u6,
-    CAST(frac * 10000 AS INTEGER) AS route_frac_u4,
-    CAST((ROUND(DEGREES(bearing_rad)) + 360) % 360 AS INTEGER) AS bearing_deg
-FROM bearing_calc
+SELECT 
+  CAST(X(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlngu6,
+  CAST(Y(ST_Transform(snappt, 4326)) * 1000000 AS INTEGER) AS snappedlatu6,
+  CAST(frac * 10000 AS INTEGER) AS routefracu4,
+  CAST(ROUND(Degrees(bearingrad)) % 360 AS INTEGER) AS bearingdeg
+FROM bearingcalc
 `
 
 type GetRunSnapParams struct {
 	Lng   interface{} `json:"lng"`
 	Lat   interface{} `json:"lat"`
-	RunID string      `json:"run_id"`
+	Runid string      `json:"runid"`
 }
 
 type GetRunSnapRow struct {
-	SnappedLngU6 int64 `json:"snapped_lng_u6"`
-	SnappedLatU6 int64 `json:"snapped_lat_u6"`
-	RouteFracU4  int64 `json:"route_frac_u4"`
-	BearingDeg   int64 `json:"bearing_deg"`
+	Snappedlngu6 int64 `json:"snappedlngu6"`
+	Snappedlatu6 int64 `json:"snappedlatu6"`
+	Routefracu4  int64 `json:"routefracu4"`
+	Bearingdeg   int64 `json:"bearingdeg"`
 }
 
-// Snap raw GPS to route and compute linear reference + bearing
+// Snap raw GPS to route and compute linear reference bearing
 func (q *Queries) GetRunSnap(ctx context.Context, arg GetRunSnapParams) (GetRunSnapRow, error) {
-	row := q.db.QueryRowContext(ctx, getRunSnap, arg.Lng, arg.Lat, arg.RunID)
+	row := q.db.QueryRowContext(ctx, getRunSnap, arg.Lng, arg.Lat, arg.Runid)
 	var i GetRunSnapRow
 	err := row.Scan(
-		&i.SnappedLngU6,
-		&i.SnappedLatU6,
-		&i.RouteFracU4,
-		&i.BearingDeg,
+		&i.Snappedlngu6,
+		&i.Snappedlatu6,
+		&i.Routefracu4,
+		&i.Bearingdeg,
 	)
 	return i, err
 }
