@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -43,9 +45,23 @@ func init() {
 					return fmt.Errorf("failed to load spatialite: %w (ensure libsqlite3-mod-spatialite is installed)", err)
 				}
 
-				// Initialize spatial metadata
-				if _, err := conn.Exec("SELECT InitSpatialMetaData(1)", nil); err != nil {
-					return fmt.Errorf("InitSpatialMetaData failed: %w", err)
+				// Check if spatial_ref_sys table already exists
+				rows, err := conn.Query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys' LIMIT 1", nil)
+				if err != nil {
+					return fmt.Errorf("failed to check spatial_ref_sys existence: %w", err)
+				}
+
+				dest := make([]driver.Value, 1)
+				err = rows.Next(dest)
+				rows.Close()
+
+				if err == io.EOF {
+					// No rows found, table doesn't exist - initialize spatial metadata
+					if _, err := conn.Exec("SELECT InitSpatialMetaData(1)", nil); err != nil {
+						return fmt.Errorf("InitSpatialMetaData failed: %w", err)
+					}
+				} else if err != nil {
+					return fmt.Errorf("failed to check for spatial_ref_sys: %w", err)
 				}
 
 				return nil
