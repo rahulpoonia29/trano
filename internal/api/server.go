@@ -97,6 +97,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/healthz", s.healthHandler)
 
 	r.Get("/v1/runs/{train_no}/{run_date}", s.getRunHandler)
+	r.Get("/v1/trains/viewport", s.getTrainsInViewportHandler)
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
