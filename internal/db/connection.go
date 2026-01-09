@@ -3,10 +3,12 @@ package db
 import (
 	"database/sql"
 	"database/sql/driver"
+	"embed"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 
 	"trano/internal/config"
@@ -16,8 +18,10 @@ import (
 
 const (
 	driverName = "sqlite3_spatialite"
-	schemaPath = "./internal/db/schema.sql"
 )
+
+//go:embed schema/*.sql
+var migrationFiles embed.FS
 
 type DatabaseOptions struct {
 	ForeignKeysEnabled bool
@@ -134,16 +138,30 @@ func configureConnectionPool(dbConn *sql.DB, dbCfg config.DatabaseConfig, logger
 }
 
 func applyMigrations(dbConn *sql.DB, logger *log.Logger) error {
-	schema, err := os.ReadFile(schemaPath)
+	entries, err := migrationFiles.ReadDir("schema")
 	if err != nil {
-		return fmt.Errorf("failed to read schema file: %w", err)
+		return fmt.Errorf("failed to read migrations directory: %w", err)
 	}
 
-	if _, err := dbConn.Exec(string(schema)); err != nil {
-		return fmt.Errorf("failed to execute schema: %w", err)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		filePath := path.Join("schema", entry.Name())
+		logger.Printf("applying migration: %s", filePath)
+
+		schema, err := migrationFiles.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s: %w", filePath, err)
+		}
+
+		if _, err := dbConn.Exec(string(schema)); err != nil {
+			return fmt.Errorf("failed to execute migration %s: %w", filePath, err)
+		}
 	}
 
-	logger.Println("migrations applied successfully")
+	logger.Println("all migrations applied successfully")
 	return nil
 }
 
