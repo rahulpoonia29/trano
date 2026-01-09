@@ -54,8 +54,7 @@ fraccalc AS (
   SELECT
     snappt,
     route_geom,
-    ST_Distance(ST_StartPoint(route_geom), snappt) /
-      NULLIF(ST_Length(route_geom), 1.0) AS frac
+    Line_Locate_Point(route_geom, snappt) AS frac
   FROM snapped
 ),
 bearingcalc AS (

@@ -9,7 +9,7 @@ CREATE TABLE
         run_date TEXT NOT NULL, -- ISO: YYYY-MM-DD (date at origin)
         has_started INTEGER NOT NULL DEFAULT 0 CHECK (has_started IN (0, 1)),
         has_arrived INTEGER NOT NULL DEFAULT 0 CHECK (has_arrived IN (0, 1)),
-        current_status TEXT DEFAULT "unknown", -- e.g. "Running", "Rescheduled"
+        current_status TEXT DEFAULT "unknown" NOT NULL, -- e.g. "Running", "Rescheduled"
 
         last_known_lat_u6 INTEGER,
         last_known_lng_u6 INTEGER,
